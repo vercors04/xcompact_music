@@ -1,0 +1,52 @@
+# Configuration de musique — un fichier par appareil.
+#
+# Emplacement :
+#   Termux / Linux : ~/.config/musique/config.toml
+#   Windows        : %APPDATA%\musique\config.toml
+#   (ou n'importe où avec --config FICHIER, ou la variable MUSIQUE_CONFIG)
+#
+# Seule `library` est obligatoire ; tout le reste a une valeur par défaut raisonnable
+# (celle indiquée ici en commentaire).
+
+# Dossier de la bibliothèque musicale (celui que Syncthing synchronisera).
+# Téléphone, carte SD : regarde le nom du volume avec `ls /storage`
+library = "/storage/C1B3-16F0/Music"
+# Windows : library = 'C:\Users\moi\Music\Bibliotheque'   (apostrophes : pas d'échappement)
+
+# Cache, index, rapports, journaux : local à l'appareil, jamais synchronisé.
+# state_dir = "~/.local/state/musique"
+
+# layout = "flat"              # "flat" : tout à la racine, « Artiste - Titre.opus » (tu ranges toi-même)
+#                              # "artist_album" : Artiste/Album/NN - Titre.opus
+# ffmpeg = "ffmpeg"            # chemin complet si pas dans le PATH
+# ffprobe = "ffprobe"
+# sources = ["ytmusic"]        # ordre de priorité
+# search_limit = 10            # candidats examinés par requête
+# wake_lock = true             # Termux : empêche la veille pendant un lot
+# release_wake_lock = true     # relâcher à la fin (relâche aussi un verrou pris à la main !)
+
+[matching]
+# accept = 0.85                # ≥ : téléchargé sans demander
+# doubtful = 0.60              # entre doubtful et accept : demandé (--confirm) ou mis de côté
+# variant_penalty = 0.35       # live, remix, acoustic... non demandés : × (1 - 0.35)
+# soft_variant_penalty = 0.12  # edit, clean (même enregistrement) : × (1 - 0.12)
+
+[loudness]
+# target_lufs = -18.0          # référence ReplayGain 2.0 (ne change que si tu sais pourquoi)
+# peak_ceiling_dbfs = -1.0     # un gain positif ne pousse jamais le pic au-dessus
+# cap_positive_gain = true
+# true_peak = false            # true : plus exact, mais ×7 plus lent sur téléphone
+
+[cover]
+# size = 600                   # px (écran du téléphone : 720 px de large)
+# quality = 70                 # qualité JPEG demandée au serveur (≈ 40-120 Ko)
+
+[metadata]
+# musicbrainz = true           # album original, année exacte, n° de piste, pochette de l'album
+# contact = ""                 # optionnel : e-mail ou URL, transmis à MusicBrainz (User-Agent)
+
+[download]
+# sleep_between_s = 2.0        # pause entre deux téléchargements
+# retries = 3
+# js_runtime = ""              # "" = deno (défaut de yt-dlp) ; ex. "node"
+# cookies_file = ""            # seulement si YouTube bloque (« confirm you're not a bot »)
