@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "musique"
 version = "0.1.0"
-description = "Trouve, télécharge (sans réencodage), tague et normalise le volume de morceaux à partir de requêtes « artiste - titre »."
+description = "Turn 'Artist - Title' queries into tagged audio files with consistent loudness."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

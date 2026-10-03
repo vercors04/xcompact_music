@@ -22,7 +22,8 @@ Le score est un produit de facteurs dans [0, 1] :
 * rang : −1 % par position, pour départager deux candidats autrement identiques
   en faveur de l'ordre de pertinence de la source.
 
-Les seuils (0.85 / 0.60) sont justifiés dans DESIGN.md avec des cas réels.
+Seuils (0.85 / 0.60) choisis sur des cas réels : bons matchs ≥ 0.88, mauvais candidats
+plausibles ≤ 0.67 (Radio Edit, Mellow Mix, medley live, reprise).
 """
 
 from __future__ import annotations
