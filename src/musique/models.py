@@ -164,3 +164,6 @@ class Result:
     path: Path | None = None
     best: Scored | None = None
     alternatives: list[Scored] = field(default_factory=list)
+    # Candidats proposables au choix manuel de fin de lot (douteux / introuvable), du
+    # meilleur au moins bon. Vide quand l'utilisateur a déjà répondu « aucun ».
+    choices: list[Scored] = field(default_factory=list)

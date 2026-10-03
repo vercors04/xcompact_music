@@ -2,10 +2,12 @@
 
     musique get "Daft Punk - Around the World" "Radiohead - Creep"
     musique get -f liste.txt --dry-run
+    (en fin de lot : choix des douteux / introuvables à télécharger quand même)
     musique get --playlist "https://music.youtube.com/playlist?list=..."
     musique review          # traiter les requêtes douteuses mises de côté
     musique gain --check    # mesurer l'homogénéité du volume de la bibliothèque
     musique retag           # appliquer MusicBrainz à des fichiers déjà présents
+    musique scan            # Android : faire apparaître les fichiers dans les applis musique
     musique doctor          # vérifier l'installation
 """
 
@@ -21,7 +23,7 @@ from pathlib import Path
 
 from musique import __version__
 from musique.config import Config, ConfigError, load
-from musique.device import fix_console_encoding, wake_lock
+from musique.device import fix_console_encoding, media_scan, wake_lock
 from musique.matching import explain
 from musique.models import Query, Result, Scored
 
@@ -85,14 +87,17 @@ def playlist_queries(url: str) -> list[Query]:
         title = t.get("title") or ""
         artists = [a["name"] for a in t.get("artists") or [] if a.get("name")]
         artist = ", ".join(artists)
-        if t.get("videoType") != "MUSIC_VIDEO_TYPE_ATV" and " - " in title:
-            # Vidéo ordinaire : « Artiste - Titre (Official Video) » ; la chaîne
-            # (« ArtisteVEVO ») est un mauvais artiste, le titre de la vidéo est meilleur.
-            artist, title = title.split(" - ", 1)
+        dur = t.get("duration_seconds")
+        if t.get("videoType") != "MUSIC_VIDEO_TYPE_ATV":
+            # Vidéo (clip, vidéo d'amateur) : sa durée n'est pas celle du morceau (intro,
+            # générique : « Colors (Official Music Video) » 4:25 pour un morceau de 4:07,
+            # assez pour une pénalité de durée), et son titre porte « (Official Video) ».
+            dur = None
+            if " - " in title:
+                # « Artiste - Titre (Official Video) » : la chaîne (« ArtisteVEVO ») est un
+                # mauvais artiste, le titre de la vidéo est meilleur.
+                artist, title = title.split(" - ", 1)
             title = _VIDEO_SUFFIX.sub("", title).strip()
-            dur = None  # la durée d'un clip ≠ durée du morceau
-        else:
-            dur = t.get("duration_seconds")
         if not title:
             continue
         album = (t.get("album") or {}).get("name")
@@ -151,13 +156,99 @@ def interactive_confirm(q: Query, ranked: list[Scored]) -> Scored | None:
 
 
 # --------------------------------------------------------------------------- #
+# Choix manuel en fin de lot
+# --------------------------------------------------------------------------- #
+
+_TOKEN = re.compile(r"(\d+)(?:-(\d+))?([a-z]?)")
+
+
+def parse_selection(text: str, offered: dict[int, int]) -> list[tuple[int, int]]:
+    """« 2 15b 4-6 » → [(2, 0), (15, 1), (4, 0), (5, 0), (6, 0)].
+
+    `offered` : numéro de requête → nombre de candidats proposés. Une lettre choisit le
+    candidat (a = le premier, par défaut) ; « 4-6 » = 4, 5 et 6 (les numéros non
+    proposés de l'intervalle sont ignorés) ; « tout » = le premier candidat de chaque.
+    Lève ValueError avec un message lisible si un élément est invalide.
+
+    >>> parse_selection("2, 15b", {2: 3, 15: 2})
+    [(2, 0), (15, 1)]
+    >>> parse_selection("1-9", {2: 1, 5: 3})
+    [(2, 0), (5, 0)]
+    """
+    text = text.strip().lower()
+    if text in ("tout", "tous", "all", "*"):
+        return [(i, 0) for i in sorted(offered)]
+    out: list[tuple[int, int]] = []
+    for tok in re.split(r"[\s,;]+", text):
+        if not tok:
+            continue
+        m = _TOKEN.fullmatch(tok)
+        if not m:
+            raise ValueError(f"« {tok} » n'est pas un numéro (ex. 2, 15b, 4-6)")
+        lo, hi, letter = int(m[1]), int(m[2] or m[1]), m[3]
+        if hi < lo:
+            raise ValueError(f"intervalle à l'envers : « {tok} »")
+        if letter and hi != lo:
+            raise ValueError(f"lettre sur un intervalle : « {tok} » (choisis la lettre numéro par numéro)")
+        nums = [n for n in range(lo, hi + 1) if n in offered]
+        if not nums:
+            raise ValueError(f"{tok} : pas dans la liste proposée")
+        k = ord(letter) - ord("a") if letter else 0
+        for n in nums:
+            if k >= offered[n]:
+                raise ValueError(f"{tok} : seulement {offered[n]} candidat(s) pour le n° {n}")
+            if (n, k) not in out:
+                out.append((n, k))
+    return out
+
+
+def offer_choices(results: list[Result]) -> list[tuple[int, Scored]]:
+    """Montre les requêtes non téléchargées et demande lesquelles télécharger quand même.
+
+    Renvoie [(numéro de requête dans le lot, candidat choisi)]. Ne demande rien si
+    l'entrée n'est pas un terminal (script, tube) : rien n'est alors choisi.
+    """
+    from musique.models import Outcome
+
+    offered = {i: r.choices for i, r in enumerate(results, 1)
+               if r.outcome in (Outcome.DOUBTFUL, Outcome.NOT_FOUND) and r.choices}
+    if not offered:
+        return []
+    width = len(str(len(results)))
+    print(f"\nNon téléchargé{'s' if len(offered) > 1 else ''} : "
+          "tu peux choisir de télécharger quand même le candidat trouvé.")
+    for i, cands in offered.items():
+        r = results[i - 1]
+        print(f"  {i:>{width}}. {r.query.raw}   ({r.outcome.value})")
+        for k, s in enumerate(cands):
+            print(f"  {'':>{width}}   {chr(ord('a') + k)}) {s.candidate.label()}   {explain(s)}")
+    if not sys.stdin.isatty():
+        print("(entrée non interactive : rien n'est demandé ; relance dans un terminal pour choisir)")
+        return []
+    counts = {i: len(c) for i, c in offered.items()}
+    while True:
+        try:
+            ans = input("Numéros à télécharger (ex. « 2 15 », « 15b » = 2ᵉ candidat, « tout »), "
+                        "Entrée = aucun : ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return []
+        try:
+            picked = parse_selection(ans, counts)
+        except ValueError as e:
+            print(f"  {e}")
+            continue
+        return [(i, offered[i][k]) for i, k in picked]
+
+
+# --------------------------------------------------------------------------- #
 # Commandes
 # --------------------------------------------------------------------------- #
 
 
 def _run_batch(cfg: Config, queries: list[Query], dry_run: bool, confirm: bool, verbose: bool) -> int:
     from musique.library import LibraryIndex, run_lock
-    from musique.pipeline import Context, PendingStore, StopBatch, process
+    from musique.pipeline import Context, PendingStore, StopBatch, process, process_chosen
     from musique.report import line, summary, write_tsv
     from musique.sources import build_sources
 
@@ -183,6 +274,21 @@ def _run_batch(cfg: Config, queries: list[Query], dry_run: bool, confirm: bool, 
                 r = process(q, ctx)
                 results.append(r)
                 print(line(i, n, r, cfg.library, verbose), flush=True)
+            # Choix manuel parmi ce qui n'a pas été téléchargé d'office. Le résultat
+            # remplace celui de la requête (résumé et rapport reflètent l'état final).
+            if not dry_run:
+                picked = offer_choices(results)
+                if picked:
+                    print()
+                replaced: set[int] = set()
+                for i, chosen in picked:
+                    r = process_chosen(queries[i - 1], chosen, ctx)
+                    if i in replaced:  # 2ᵉ candidat choisi pour la même requête : en plus
+                        results.append(r)
+                    else:
+                        results[i - 1] = r
+                        replaced.add(i)
+                    print(line(i, n, r, cfg.library, verbose), flush=True)
         except (StopBatch, KeyboardInterrupt):
             print("\nInterrompu : les fichiers déjà rangés sont complets, rien n'est à moitié écrit.")
 
@@ -246,6 +352,7 @@ def cmd_gain(cfg: Config, args) -> int:
                     loud = measure(p, cfg.ffmpeg, true_peak=lc.true_peak)
                     gain = compute_gain(loud, lc.target_lufs, lc.peak_ceiling_dbfs, lc.cap_positive_gain)
                     rewrite_atomically(p, cfg.library, lambda f: write_tags(f, None, None, gain))
+                    media_scan([p], cfg.media_scan)
                     cap = " (plafonné)" if gain.capped else ""
                     print(f"[{i}/{len(paths)}] {loud.integrated_lufs:6.1f} LUFS → {gain.gain_db:+.1f} dB{cap}  {name}")
             except Exception as e:
@@ -304,11 +411,14 @@ def cmd_retag(cfg: Config, args) -> int:
                 continue
             # Gain inchangé ; pochette inchangée si MusicBrainz n'en a pas.
             rewrite_atomically(p, cfg.library, lambda f: write_tags(f, new, e.cover, None))
+            scan = [p]
             if target != p:
                 if target.exists() and not os.path.samefile(target, p):
                     print(f"      !! {target.name} existe déjà : fichier non renommé")
                 else:
                     os.replace(p, target)
+                    scan.append(target)  # l'ancien chemin est retiré de l'index Android, le nouveau ajouté
+            media_scan(scan, cfg.media_scan)
             done += 1
         if not args.dry_run:
             index = LibraryIndex(cfg.library, cfg.state_dir)
@@ -317,6 +427,24 @@ def cmd_retag(cfg: Config, args) -> int:
     print(f"\n{done} fichier(s) mis à jour, {unchanged} déjà à jour"
           + (" (dry-run : rien n'a été écrit)" if args.dry_run else ""))
     return 0
+
+
+def cmd_scan(cfg: Config, args) -> int:
+    """Signale des fichiers déjà présents à l'index des médias d'Android (Termux)."""
+    from musique.device import is_termux
+    from musique.library import walk_audio
+
+    if not is_termux():
+        print("Rien à faire : l'index des médias n'existe que sous Android (Termux).")
+        return 0
+    paths = [Path(p) for p in args.paths] if args.paths else sorted(walk_audio(cfg.library))
+    if not paths:
+        print("Aucun fichier audio.")
+        return 0
+    print(f"{len(paths)} fichier(s) à signaler à Android (~0,5 s chacun)…")
+    n = media_scan(paths)
+    print(f"{n}/{len(paths)} signalé(s). Ils apparaissent dans les applis musique d'ici quelques secondes.")
+    return 0 if n == len(paths) else 1
 
 
 def cmd_doctor(cfg: Config | None, args) -> int:
@@ -362,6 +490,10 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("--rename", action="store_true", help="renommer en « Artiste - Titre » (dans le même dossier)")
     rt.add_argument("-n", "--dry-run", action="store_true", help="montrer les changements sans rien écrire")
     rt.set_defaults(func=cmd_retag)
+
+    sc = add("scan", help="faire apparaître les fichiers dans les applis musique d'Android (Termux)")
+    sc.add_argument("paths", nargs="*", help="fichiers (défaut : toute la bibliothèque)")
+    sc.set_defaults(func=cmd_scan)
 
     d = add("doctor", help="vérifier l'installation et la configuration")
     d.set_defaults(func=cmd_doctor)

@@ -102,7 +102,9 @@ def score_candidate(q: Query, c: Candidate, cfg: MatchConfig = MatchConfig()) ->
     if q.title is not None and q.artist is not None:
         q_core, _ = split_title(q.title)
         title_sim = max(similarity(q_core, cand_core), similarity(q.title, c.title))
-        artist_sim = artist_similarity(q.artist, c.artists)
+        # Les invités du titre comptent comme artistes du candidat : « Nouvelle Vague,
+        # Camille » doit valoir 1,0 face à « Nouvelle Vague - … (feat. Camille) ».
+        artist_sim = artist_similarity(q.artist, c.artists + featured_artists(c.title))
         base = (title_sim**cfg.w_title) * (artist_sim**cfg.w_artist)
         details.update(title=title_sim, artist=artist_sim)
         wanted = variant_counts(q.title)

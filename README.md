@@ -8,7 +8,8 @@ For each query it:
 
 1. searches YouTube Music (official audio tracks only) and scores the results against the
    query: title, artist, duration, and markers such as live, remix or cover. Uncertain
-   matches are set aside instead of downloaded;
+   matches are not downloaded automatically: at the end of the batch they are listed with
+   their best candidates, and you type the numbers you want anyway (e.g. `2 15b`);
 2. downloads the original Opus stream with yt-dlp, without transcoding;
 3. looks up the recording on MusicBrainz for the original album, year, track number and
    cover art;
@@ -57,9 +58,11 @@ musique get -f list.txt              # one query per line
 musique get -p PLAYLIST_URL          # YouTube or YouTube Music playlist
 musique get -f list.txt --dry-run    # show the choices, download nothing
 musique get -f list.txt --confirm    # ask about uncertain matches
+                                     # (otherwise: pick them by number at the end of the batch)
 musique review                       # go through matches set aside earlier
 musique retag                        # refresh tags of existing files from MusicBrainz
 musique gain --check                 # loudness before/after gain, per file
+musique scan                         # Android: make files show up in music apps (MediaStore)
 ```
 
 Turn on ReplayGain in your player, in track mode with a 0 dB pre-amp. Tested with Auxio

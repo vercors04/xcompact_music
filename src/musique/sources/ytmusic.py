@@ -22,7 +22,7 @@ from pathlib import Path
 
 from musique.config import Config
 from musique.models import Candidate, Quality, Query, TrackMeta
-from musique.textnorm import fold
+from musique.textnorm import dedupe_qualifiers, fold
 from musique.ytdlp import ErrorKind, SourceError, download_audio
 
 log = logging.getLogger(__name__)
@@ -87,8 +87,41 @@ class YTMusicSource:
         raise AssertionError("unreachable")
 
     def search(self, query: Query, limit: int) -> list[Candidate]:
-        text = f"{query.artist} {query.title}" if query.artist and query.title else query.raw
-        results = self._call("recherche", self.yt.search, text, filter="songs", limit=limit)
+        """Candidats « songs » ; deux formulations fusionnées quand artiste et titre sont connus.
+
+        Cas réel (2026-10-03) : « Black Pumas Colors » ne renvoie *pas* la version de
+        l'album dans ses 20 premiers résultats (seulement live, acoustique, « feat.
+        Hypnotic Brass Ensemble »…), alors que « Black Pumas - Colors » la renvoie en
+        tête. Le moteur de YouTube Music est sensible à la formulation : on interroge
+        les deux et on fusionne (rang = meilleure position dans l'une ou l'autre).
+        Sur 29 requêtes testées, la fusion n'a changé aucun autre choix ; coût mesuré
+        ~0,4 s par requête.
+        """
+        if query.artist and query.title:
+            texts = [f"{query.artist} {query.title}", f"{query.artist} - {query.title}"]
+        else:
+            texts = [query.raw]
+        best: dict[str, tuple[int, int, Candidate]] = {}  # videoId → (position, n° de recherche, candidat)
+        failures: list[SourceError] = []
+        for n, text in enumerate(texts):
+            try:
+                results = self._call("recherche", self.yt.search, text, filter="songs", limit=limit)
+            except SourceError as e:  # l'autre formulation suffit si elle a abouti
+                log.info("recherche %r : %s", text, e)
+                failures.append(e)
+                continue
+            for pos, c in enumerate(self._candidates(results)[:limit]):
+                if c.id not in best or (pos, n) < best[c.id][:2]:
+                    best[c.id] = (pos, n, c)
+        if len(failures) == len(texts):
+            raise failures[-1]
+        out = []
+        for pos, _, c in sorted(best.values(), key=lambda x: x[:2]):
+            c.rank = pos
+            out.append(c)
+        return out
+
+    def _candidates(self, results: list[dict]) -> list[Candidate]:
         out: list[Candidate] = []
         for r in results:
             vid = r.get("videoId")
@@ -99,7 +132,7 @@ class YTMusicSource:
                 Candidate(
                     source=self.name,
                     id=vid,
-                    title=r.get("title") or "",
+                    title=dedupe_qualifiers(r.get("title") or ""),
                     artists=[a["name"] for a in r.get("artists") or [] if a.get("name")],
                     album=album.get("name"),
                     album_id=album.get("id"),
@@ -109,7 +142,7 @@ class YTMusicSource:
                     explicit=r.get("isExplicit"),
                 )
             )
-        return out[:limit]
+        return out
 
     def _album(self, album_id: str) -> dict | None:
         if album_id not in self._albums:

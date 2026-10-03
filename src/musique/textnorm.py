@@ -100,6 +100,30 @@ def split_title(title: str) -> tuple[str, list[str]]:
     return core, qualifiers
 
 
+def dedupe_qualifiers(title: str) -> str:
+    """Retire un qualificatif entre parenthèses répété à l'identique.
+
+    Cas réel (YouTube Music, 2026-10-03) : « Résonances (feat. JP Nataf) (feat. JP Nataf) ».
+    Sans ça, le nom du fichier et le tag TITLE portent la mention en double.
+
+    >>> dedupe_qualifiers("Résonances (feat. JP Nataf) (feat. JP Nataf)")
+    'Résonances (feat. JP Nataf)'
+    >>> dedupe_qualifiers("Creep (Acoustic) [Live]")
+    'Creep (Acoustic) [Live]'
+    """
+    seen: set[str] = set()
+
+    def keep_first(m: re.Match) -> str:
+        key = fold(m.group(1))
+        if key in seen:
+            return ""
+        seen.add(key)
+        return m.group(0)
+
+    out = _BRACKETS.sub(keep_first, title)
+    return " ".join(out.split()) if out != title else title
+
+
 # --------------------------------------------------------------------------- #
 # Variantes : mots qui signalent un *autre enregistrement*
 # --------------------------------------------------------------------------- #

@@ -40,7 +40,7 @@ from dataclasses import dataclass, field, replace
 from musique import __version__
 from musique.matching import MatchConfig, score_candidate
 from musique.models import Candidate, Query, TrackMeta
-from musique.textnorm import fold, split_title, variant_counts
+from musique.textnorm import featured_artists, fold, split_title, variant_counts
 
 log = logging.getLogger(__name__)
 
@@ -357,14 +357,23 @@ def apply_choice(meta: TrackMeta, choice: ReleaseChoice) -> TrackMeta:
     # mention si MusicBrainz ne l'a pas : sinon un live et un studio porteraient le même nom.
     if variant_counts(mb_title) == variant_counts(meta.title):
         title = prefer_case(mb_title, split_title(meta.title)[0])
+    # « Résonances (feat. JP Nataf) » → « Résonances » : l'invité ne doit pas disparaître,
+    # il passe dans les artistes (convention de Picard : le titre sans « feat. »).
+    artists = list(meta.artists)
+    known = {fold(a) for a in artists}
+    for guest in featured_artists(meta.title):
+        if fold(guest) not in known and f" {fold(guest)} " not in f" {fold(title)} ":
+            artists.append(guest)
+            known.add(fold(guest))
     rel_credit = _credit_names(rel.get("artist-credit"))
     rec_credit = _credit_names(rec.get("artist-credit"))
-    album_artists = meta.artists[:1] if not rel_credit or rel_credit == rec_credit else rel_credit
+    album_artists = artists[:1] if not rel_credit or rel_credit == rec_credit else rel_credit
     disc = _int(choice.medium.get("position"))
     rtype = (rg.get("primary-type") or "").lower() or None
     return replace(
         meta,
         title=title,
+        artists=artists,
         album=prefer_case(rel.get("title"), meta.album),
         album_artists=album_artists,
         year=_year(rel.get("date")) or meta.year,

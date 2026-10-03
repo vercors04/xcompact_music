@@ -21,9 +21,10 @@ library = "/storage/C1B3-16F0/Music"
 # ffmpeg = "ffmpeg"            # chemin complet si pas dans le PATH
 # ffprobe = "ffprobe"
 # sources = ["ytmusic"]        # ordre de priorité
-# search_limit = 10            # candidats examinés par requête
+# search_limit = 10            # résultats lus par recherche (2 recherches par requête « Artiste - Titre »)
 # wake_lock = true             # Termux : empêche la veille pendant un lot
 # release_wake_lock = true     # relâcher à la fin (relâche aussi un verrou pris à la main !)
+# media_scan = true            # Termux : faire apparaître les nouveaux fichiers dans les applis musique
 
 [matching]
 # accept = 0.85                # ≥ : téléchargé sans demander

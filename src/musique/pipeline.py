@@ -24,6 +24,7 @@ from typing import Callable
 
 from musique import ytdlp
 from musique.config import Config
+from musique.device import media_scan
 from musique.library import LibraryIndex, place_atomically, resolve_existing, temp_dir, track_relpath
 from musique.loudness import MeasureError, compute_gain, measure
 from musique.matching import decide, rank
@@ -40,6 +41,9 @@ log = logging.getLogger(__name__)
 # Callback de confirmation : reçoit la requête et les meilleurs candidats, renvoie le
 # candidat choisi, None (« aucun ne convient ») ou lève StopBatch.
 ConfirmFn = Callable[[Query, list[Scored]], Scored | None]
+
+# Nombre de candidats proposés au choix manuel de fin de lot, par requête.
+MAX_CHOICES = 3
 
 
 class StopBatch(Exception):
@@ -149,8 +153,21 @@ def _source_ok(ctx: Context, src_name: str) -> None:
 
 
 def process(q: Query, ctx: Context) -> Result:
+    """Traite une requête : recherche, décision, téléchargement si sûr."""
+    return _guarded(q, ctx, lambda: _process(q, ctx))
+
+
+def process_chosen(q: Query, chosen: Scored, ctx: Context) -> Result:
+    """Télécharge un candidat choisi à la main (sélection de fin de lot), sans refaire la
+    recherche ni appliquer les seuils : c'est l'utilisateur qui a tranché. Pas de candidat
+    de repli non plus (il a choisi *celui-là*). La requête est mémorisée comme les autres :
+    relancer la même liste ne redemandera rien."""
+    return _guarded(q, ctx, lambda: _fetch(q, chosen, [], [], ctx))
+
+
+def _guarded(q: Query, ctx: Context, run: Callable[[], Result]) -> Result:
     try:
-        r = _process(q, ctx)
+        r = run()
     except (StopBatch, KeyboardInterrupt):
         raise
     except (MeasureError, TagError, OSError) as e:  # ffmpeg, mutagen, disque (plein, retiré…)
@@ -200,18 +217,24 @@ def _process(q: Query, ctx: Context) -> Result:
     decision = decide(best, cfg.matching)
     res_alts = ranked[1:4]
 
+    # Proposés au choix manuel de fin de lot si on ne télécharge pas d'office.
+    choices = ranked[:MAX_CHOICES]
+
     if decision is Decision.REJECT:
-        return Result(q, Outcome.NOT_FOUND, "aucun candidat assez proche", best=best, alternatives=res_alts)
+        return Result(q, Outcome.NOT_FOUND, "aucun candidat assez proche", best=best, alternatives=res_alts,
+                      choices=choices)
 
     if decision is Decision.DOUBTFUL:
         if ctx.confirm is None:
             _set_aside(ctx, q, ranked)
-            return Result(q, Outcome.DOUBTFUL, "confiance insuffisante", best=best, alternatives=res_alts)
+            return Result(q, Outcome.DOUBTFUL, "confiance insuffisante", best=best, alternatives=res_alts,
+                          choices=choices)
         try:
             chosen = ctx.confirm(q, ranked[:5])
         except Skip:
             _set_aside(ctx, q, ranked)
-            return Result(q, Outcome.DOUBTFUL, "laissé de côté", best=best, alternatives=res_alts)
+            return Result(q, Outcome.DOUBTFUL, "laissé de côté", best=best, alternatives=res_alts,
+                          choices=choices)
         if chosen is None:  # « aucun ne convient » : décision prise, on ne la repose plus
             if ctx.pending is not None and not ctx.dry_run:
                 ctx.pending.discard(q)
@@ -219,18 +242,27 @@ def _process(q: Query, ctx: Context) -> Result:
         best = chosen
         ranked = [chosen] + [s for s in ranked if s is not chosen]
 
+    fallbacks = [s for s in ranked[1:] if s.score >= cfg.matching.accept][:2]
+    return _fetch(q, best, fallbacks, res_alts, ctx)
+
+
+def _fetch(q: Query, best: Scored, fallbacks: list[Scored], alternatives: list[Scored], ctx: Context) -> Result:
+    """Télécharge `best` (ou, s'il est indisponible, un des `fallbacks`) sauf s'il est déjà là."""
+    cfg, lib = ctx.cfg, ctx.cfg.library
+    key = query_key(q)
+
     # 3. Déjà dans la bibliothèque (même identifiant de source) ?
     existing = ctx.index.by_source(best.candidate.source_id)
     if existing:
-        ctx.index.remember_query(key, existing)
-        ctx.index.save()
+        if not ctx.dry_run:
+            ctx.index.remember_query(key, existing)
+            ctx.index.save()
         return Result(q, Outcome.PRESENT, "déjà présent (même source)", path=lib / existing, best=best)
 
     if ctx.dry_run:
-        return Result(q, Outcome.PLANNED, "", best=best, alternatives=res_alts)
+        return Result(q, Outcome.PLANNED, "", best=best, alternatives=alternatives)
 
     # 4. Téléchargement : le meilleur, puis les suivants acceptables s'il est indisponible
-    fallbacks = [s for s in ranked[1:] if s.score >= cfg.matching.accept][:2]
     last_error = ""
     for s in [best, *fallbacks]:
         src_name = s.candidate.source
@@ -315,6 +347,8 @@ def _acquire(s: Scored, q: Query, ctx: Context) -> tuple[Path, str]:
             ctx.index.save()
             return dest, "present"
         place_atomically(audio, dest)
+    # Sans ça, le fichier n'apparaît pas dans les applis musique d'Android (voir device.media_scan).
+    media_scan([dest], cfg.media_scan)
 
     ctx.index.add(dest, c.source_id, meta.artist_display, meta.title, query_key(q))
     ctx.index.save()

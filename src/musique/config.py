@@ -78,6 +78,7 @@ class Config:
     search_limit: int = 10
     wake_lock: bool = True  # Termux : empêche la mise en veille pendant un lot
     release_wake_lock: bool = True
+    media_scan: bool = True  # Termux : signaler chaque nouveau fichier à l'index des médias d'Android
     matching: MatchConfig = field(default_factory=MatchConfig)
     loudness: LoudnessConfig = field(default_factory=LoudnessConfig)
     cover: CoverConfig = field(default_factory=CoverConfig)
