@@ -52,6 +52,11 @@ class MBError(RuntimeError):
     pass
 
 
+class MBRequestError(MBError):
+    """Requête refusée (HTTP 400/404…) : problème de *cette* requête, pas du serveur.
+    Ne compte pas pour le coupe-circuit."""
+
+
 # --------------------------------------------------------------------------- #
 # Client HTTP (limité à 1 requête/s, nouveaux essais si le serveur est occupé)
 # --------------------------------------------------------------------------- #
@@ -89,6 +94,8 @@ class MBClient:
     def get(self, path: str, **params) -> dict:
         try:
             data = self._get(path, **params)
+        except MBRequestError:
+            raise
         except MBError:
             self.failures += 1
             if self.disabled:
@@ -119,7 +126,9 @@ class MBClient:
             else:
                 if r.status_code == 200:
                     return r.json()
-                if r.status_code not in (429, 500, 502, 503, 504) or busy >= len(busy_delays):
+                if r.status_code not in (429, 500, 502, 503, 504):
+                    raise MBRequestError(f"HTTP {r.status_code}")
+                if busy >= len(busy_delays):
                     raise MBError(f"HTTP {r.status_code}")
                 delay, busy = busy_delays[busy], busy + 1
             log.debug("MusicBrainz indisponible, nouvel essai dans %d s", delay)
@@ -362,7 +371,7 @@ def apply_choice(meta: TrackMeta, choice: ReleaseChoice) -> TrackMeta:
         track_number=track_number(choice.track, choice.medium),
         track_total=choice.medium.get("track-count"),
         disc_number=disc if disc and disc > 1 else None,
-        release_type=rtype if rtype in ("album", "single", "ep") else rtype,
+        release_type=rtype,
         mbids={
             "track": rec["id"],
             "release": rel["id"],

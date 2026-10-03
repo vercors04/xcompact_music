@@ -35,6 +35,9 @@ from dataclasses import dataclass
 from musique.models import Candidate, Decision, Query, Scored
 from musique.textnorm import (
     artist_similarity,
+    featured_artists,
+    has_unknown_qualifier,
+    unrequested_guests,
     is_live_album,
     similarity,
     split_title,
@@ -120,9 +123,18 @@ def score_candidate(q: Query, c: Candidate, cfg: MatchConfig = MatchConfig()) ->
     if q.album and is_live_album(q.album):
         wanted["live"] += 1
     v = variant_factor(wanted, got, cfg)
+    # Artiste invité non demandé (voir _penalise_guests pour la règle complète) :
+    # crédité comme artiste → variante douce dès maintenant ; seulement dans le titre
+    # (« Angel (feat. Horace Andy) ») → neutre ici.
+    if q.artist is not None and q.title is not None:
+        if unrequested_guests(q.artist, q.title, c.artists):
+            v *= 1.0 - cfg.soft_variant_penalty
+            details["guest"] = 1.0
+        elif unrequested_guests(q.artist, q.title, featured_artists(c.title)):
+            details["guest"] = 0.5
     d = duration_factor(q.duration, c.duration, cfg)
     r = 1.0 - cfg.rank_penalty * min(c.rank, 10)
-    details.update(variants=v, duration=d, rank=r)
+    details.update(variants=round(v, 6), duration=d, rank=r)
     return Scored(candidate=c, score=base * v * d * r, details=details)
 
 
@@ -132,7 +144,9 @@ def rank(q: Query, candidates: list[Candidate], cfg: MatchConfig = MatchConfig()
     Départage des quasi-égalités (écart < tie_margin) : version explicite d'abord
     (la version « clean » est censurée), puis meilleure qualité audio.
     """
-    scored = sorted((score_candidate(q, c, cfg) for c in candidates), key=lambda s: -s.score)
+    scored = [score_candidate(q, c, cfg) for c in candidates]
+    _penalise_guests(scored, cfg)
+    scored.sort(key=lambda s: -s.score)
     if not scored:
         return scored
     top = scored[0].score
@@ -143,6 +157,39 @@ def rank(q: Query, candidates: list[Candidate], cfg: MatchConfig = MatchConfig()
         reverse=True,
     )
     return head + tail
+
+
+def _penalise_guests(scored: list[Scored], cfg: MatchConfig) -> None:
+    """Invité non demandé : variante forte *s'il existe une version solo au nom propre*.
+
+    Le même texte « (feat. X) » désigne tantôt l'original, tantôt une autre version ; seul
+    le reste des résultats permet de trancher. Cas réels (YouTube Music, 2026-10-03) :
+    * « Stromae - Alors on danse » : « Alors On Danse (feat. Kanye West) » (autre
+      enregistrement, couplets ajoutés) est classé en tête, crédité à Stromae seul ; mais
+      une version solo au nom propre existe (« (Radio Edit) », variante connue) → la
+      version avec Kanye passe à ×0,65 et la Radio Edit est choisie ;
+    * « Massive Attack - Angel » : l'original est « Angel (feat. Horace Andy) » ; la seule
+      autre version, « Angel (Angel Dust) », porte un qualificatif inconnu (c'est un
+      remix) → pas une preuve de version solo → l'original garde 1,0 ;
+    * « Daft Punk - Get Lucky » : toutes les versions créditent Pharrell → ×0,88, accepté.
+    « Version solo au nom propre » = sans invité, titre et artiste ≥ 0,9, au plus une
+    variante douce, aucun qualificatif inconnu.
+    """
+    soft = 1.0 - cfg.soft_variant_penalty
+    solo_exists = any(
+        "guest" not in s.details and s.details.get("title", 0) >= 0.9 and s.details.get("artist", 0) >= 0.9
+        and s.details.get("variants", 1.0) >= soft and not has_unknown_qualifier(s.candidate.title)
+        for s in scored
+    )
+    if not solo_exists:
+        return
+    for s in scored:
+        if "guest" in s.details:
+            already = soft if s.details["guest"] == 1.0 else 1.0  # pénalité douce déjà appliquée ?
+            factor = (1.0 - cfg.variant_penalty) / already
+            s.score *= factor
+            s.details["variants"] = round(s.details["variants"] * factor, 6)
+            s.details["guest"] = 2.0  # pénalité forte appliquée
 
 
 def decide(best: Scored | None, cfg: MatchConfig = MatchConfig()) -> Decision:
@@ -158,5 +205,8 @@ _WS = re.compile(r"\s+")
 
 def explain(s: Scored) -> str:
     """Résumé lisible du calcul, pour --dry-run et le rapport."""
-    parts = [f"{k}={v:.2f}" for k, v in s.details.items() if not (k in ("duration", "rank", "variants") and v == 1.0)]
+    parts = [f"{k}={v:.2f}" for k, v in s.details.items()
+             if k != "guest" and not (k in ("duration", "rank", "variants") and v == 1.0)]
+    if s.details.get("guest", 0.0) >= 1.0:  # 1 : pénalité douce, 2 : forte ; 0,5 : sans effet
+        parts.append("invité non demandé")
     return _WS.sub(" ", f"score={s.score:.2f} ({', '.join(parts)})")

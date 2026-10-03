@@ -59,7 +59,8 @@ class YTMusicSource:
         if self._yt is None:
             from ytmusicapi import YTMusic
 
-            self._yt = YTMusic()  # anonyme : aucun compte
+            # Anonyme : aucun compte. (ytmusicapi fixe lui-même un délai de 30 s par requête.)
+            self._yt = YTMusic()
         return self._yt
 
     # ------------------------------------------------------------------ #

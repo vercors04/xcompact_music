@@ -353,18 +353,63 @@ def read_track_meta(path: Path) -> tuple[TrackMeta, float | None] | None:
     if isinstance(f, MP4):
         title, artists = values("©nam"), values(_ITUNES + "ARTISTS", "©ART")
         album, date, src = values("©alb"), values("©day"), values(_ITUNES + SOURCE_TAG)
+        trkn = t.get("trkn") or [(None, None)]
+        number, total = trkn[0][0], trkn[0][1] or None
+        mb_track, mb_release = values(_ITUNES + "MusicBrainz Track Id"), values(_ITUNES + "MusicBrainz Album Id")
     elif isinstance(f, MP3):
         title, artists = values("TIT2"), values("TPE1")
         album, date, src = values("TALB"), values("TDRC"), values(f"TXXX:{SOURCE_TAG}")
+        number, _, total = (values("TRCK") or [""])[0].partition("/")
+        ufid = t.get("UFID:http://musicbrainz.org")
+        mb_track = [ufid.data.decode()] if ufid else []
+        mb_release = values("TXXX:MusicBrainz Album Id")
     else:
         title, artists = values("TITLE"), values("ARTISTS", "ARTIST")
         album, date, src = values("ALBUM"), values("DATE"), values(SOURCE_TAG)
+        number, total = (values("TRACKNUMBER") or [None])[0], (values("TRACKTOTAL") or [None])[0]
+        mb_track, mb_release = values("MUSICBRAINZ_TRACKID"), values("MUSICBRAINZ_ALBUMID")
     if not title or not artists:
         return None
     year = int(date[0][:4]) if date and date[0][:4].isdigit() else None
+    mbids = {k: v[0] for k, v in (("track", mb_track), ("release", mb_release)) if v}
     meta = TrackMeta(title=title[0], artists=artists, album=album[0] if album else None, year=year,
-                     source_id=src[0] if src else None)
+                     track_number=_to_int(number), track_total=_to_int(total),
+                     source_id=src[0] if src else None, mbids=mbids)
     return meta, getattr(f.info, "length", None)
+
+
+def _to_int(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def has_cover(path: Path) -> bool:
+    """Le fichier contient-il déjà une pochette ?"""
+    try:
+        f = mutagen.File(path)
+    except Exception:
+        return False
+    if f is None:
+        return False
+    if isinstance(f, FLAC):
+        return bool(f.pictures)
+    tags = f.tags or {}
+    if isinstance(f, MP4):
+        return "covr" in tags
+    if isinstance(f, MP3):
+        return bool(tags.getall("APIC"))
+    return "METADATA_BLOCK_PICTURE" in tags
+
+
+def same_metadata(a: TrackMeta, b: TrackMeta) -> bool:
+    """Les champs que `retag` écrit sont-ils déjà identiques ? (évite de réécrire, et donc
+    de faire renvoyer par Syncthing, des fichiers qui n'ont pas changé)"""
+    def key(m: TrackMeta) -> tuple:
+        return (m.title, list(m.artists), m.album, m.year, m.track_number, m.track_total,
+                m.mbids.get("track"), m.mbids.get("release"))
+    return key(a) == key(b)
 
 
 def _parse_db(text: str | None) -> float | None:

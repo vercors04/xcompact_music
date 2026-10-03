@@ -169,7 +169,10 @@ def download_audio(url: str, dest_dir: Path, *, retries: int = 3, js_runtime: st
         kind = classify(msg)
         delay = retry_delay(kind, msg, attempt)
         if delay is None:
-            raise SourceError(kind, _short(msg)) from cause
+            text = _short(msg)
+            if kind is ErrorKind.OTHER:  # message inconnu : peut-être un changement côté YouTube
+                text += " (si ça se répète : pip install -U yt-dlp yt-dlp-ejs)"
+            raise SourceError(kind, text) from cause
         log.info("%s, nouvel essai dans %d s : %s", kind.value, delay, _short(msg))
         time.sleep(delay)
         attempt += 1

@@ -22,10 +22,37 @@ from musique.textnorm import (
         ("Simon & Garfunkel", "simon and garfunkel"),
         ("  Hello,   World!! ", "hello world"),
         ("Motörhead", "motorhead"),
+        ("Röyksopp", "royksopp"),
+        ("Røyksopp", "royksopp"),
+        ("Mø", "mo"),
+        ("Kino - Группа крови", "kino gruppa krovi"),  # cyrillique translittéré
+        ("Ёжик", "ezhik"),
+        ("細野晴臣", "細野晴臣"),
+        ("Σωκράτης", "σωκρατησ"),  # casefold : sigma final ς → σ
+        ("snake_case", "snake case"),
     ],
 )
 def test_fold(raw, expected):
     assert fold(raw) == expected
+
+
+def test_non_latin_titles_are_not_all_identical():
+    # Avant correction, tout ce qui n'était pas [a-z0-9] disparaissait : 1.0 partout.
+    assert similarity("Группа крови", "Звезда по имени Солнце") < 0.5
+    assert similarity("Группа крови", "группа КРОВИ") == 1.0
+    assert similarity("Gruppa krovi", "Группа крови") == 1.0  # tapé en alphabet latin
+    assert similarity("スポーツマン", "ライディーン") < 0.5
+
+
+def test_punctuation_only_names():
+    assert similarity("!!!", "!!!") == 1.0
+    assert similarity("!!!", "???") == 0.0
+
+
+def test_non_latin_query_keys_are_distinct():
+    from musique.query import parse_query, query_key
+
+    assert query_key(parse_query("Кино - Группа крови")) != query_key(parse_query("ДДТ - Осень"))
 
 
 @pytest.mark.parametrize(

@@ -23,8 +23,27 @@ from difflib import SequenceMatcher
 # Normalisation
 # --------------------------------------------------------------------------- #
 
-_APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "`": "'", "´": "'", "“": '"', "”": '"'})
-_NON_ALNUM = re.compile(r"[^0-9a-z]+")
+_TRANSLATE = str.maketrans({
+    "’": "'", "‘": "'", "`": "'", "´": "'", "“": '"', "”": '"',
+    # Lettres latines que NFKD ne décompose pas (pas d'« accent » séparable) :
+    "ø": "o", "Ø": "o", "æ": "ae", "Æ": "ae", "œ": "oe", "Œ": "oe", "ł": "l", "Ł": "l",
+    "đ": "d", "Đ": "d", "ð": "d", "Ð": "d", "þ": "th", "Þ": "th", "ı": "i",
+})
+
+# Translittération du cyrillique (russe/ukrainien, système courant sans signes) : une
+# requête tapée « Kino - Gruppa krovi » doit retrouver « Кино - Группа крови ». Appliquée
+# des deux côtés de toute comparaison, après passage en minuscules.
+_CYRILLIC = str.maketrans({
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e", "ж": "zh", "з": "z",
+    "и": "i", "й": "y", "к": "k", "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r",
+    "с": "s", "т": "t", "у": "u", "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh",
+    "щ": "shch", "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    "є": "ye", "і": "i", "ї": "yi", "ґ": "g",
+})
+# Tout ce qui n'est ni lettre ni chiffre, *quelle que soit l'écriture* (\w est Unicode en
+# Python 3). Avec [^0-9a-z], un titre en cyrillique ou en japonais devenait une chaîne
+# vide : deux titres russes différents étaient jugés identiques (similarité 1.0).
+_NON_ALNUM = re.compile(r"[\W_]+")
 
 
 def fold(text: str) -> str:
@@ -32,8 +51,12 @@ def fold(text: str) -> str:
 
     >>> fold("Beyoncé & JAY-Z — Crazy in Love!")
     'beyonce and jay z crazy in love'
+    >>> fold("Кино - Группа крови"), fold("細野晴臣")
+    ('kino gruppa krovi', '細野晴臣')
     """
-    text = text.translate(_APOSTROPHES)
+    text = text.translate(_TRANSLATE)
+    # Cyrillique d'abord (avant NFKD, qui décomposerait « й » en « и » + brève).
+    text = text.casefold().translate(_CYRILLIC)
     # NFKD sépare « é » en « e » + accent combinant, qu'on retire ensuite.
     text = unicodedata.normalize("NFKD", text)
     text = "".join(c for c in text if not unicodedata.combining(c))
@@ -169,6 +192,70 @@ def _artist_key(name: str) -> str:
     return key[4:] if key.startswith("the ") else key  # « The Beatles » ≈ « Beatles »
 
 
+_FEAT_PREFIX = re.compile(r"^(?:feat\.?|ft\.?|featuring|with)\s+", re.IGNORECASE)
+
+
+def featured_artists(title: str) -> list[str]:
+    """Artistes invités mentionnés dans un titre.
+
+    >>> featured_artists("Get Lucky (feat. Pharrell Williams and Nile Rodgers)")
+    ['Pharrell Williams', 'Nile Rodgers']
+    >>> featured_artists("Creep (Acoustic)")
+    []
+    """
+    out: list[str] = []
+    for q in split_title(title)[1]:
+        if _FEAT_PREFIX.match(q):
+            out += split_artists(_FEAT_PREFIX.sub("", q))
+    return out
+
+
+def unrequested_guests(query_artist: str, query_title: str, names: list[str]) -> bool:
+    """Parmi `names`, y a-t-il un artiste que la requête ne mentionne pas ?
+
+    Un nom est « mentionné » s'il est proche (ratio ≥ 0,8) ou inclus dans un nom demandé
+    (« Pharrell » ↔ « Pharrell Williams »).
+
+    >>> unrequested_guests("Stromae", "Alors on danse", ["Stromae", "Kanye West"])
+    True
+    >>> unrequested_guests("Daft Punk feat. Pharrell", "Get Lucky", ["Daft Punk", "Pharrell Williams"])
+    False
+    """
+    asked = [_artist_key(a) for a in [*split_artists(query_artist), *featured_artists(query_title), query_artist]]
+    asked = [a for a in asked if a]
+    present = [_artist_key(p) for a in names for p in split_artists(a)]
+
+    def mentioned(name: str) -> bool:
+        return any(ratio(name, a) >= 0.8 or (min(len(name), len(a)) >= 3 and (name in a or a in name))
+                   for a in asked)
+
+    return any(p and not mentioned(p) for p in present)
+
+
+# Qualificatifs qu'on sait neutres (même enregistrement) : remaster, année, mono/stéréo,
+# version album, « feat. X », « From "Film" »… Tout autre qualificatif sans mot de
+# variante est « inconnu » (« Angel Dust » est en réalité un remix).
+_KNOWN_NEUTRAL = re.compile(
+    r"\bremaster(?:ed|ing)?\b|\b(?:19|20)\d\d\b|\bmono\b|\bstereo\b|\bdeluxe\b|\bbonus\b|\bexplicit\b"
+    r"|\balbum version\b|\boriginal (?:mix|version)\b|^(?:feat|ft|featuring|with|from)\b"
+)
+
+
+def has_unknown_qualifier(title: str) -> bool:
+    """Le titre porte-t-il un qualificatif qu'on ne sait pas interpréter ?
+
+    >>> has_unknown_qualifier("Angel (Angel Dust)"), has_unknown_qualifier("Hey Jude (2015 Remaster)")
+    (True, False)
+    >>> has_unknown_qualifier("Alors on danse (Radio Edit)"), has_unknown_qualifier("Angel (feat. Horace Andy)")
+    (False, False)
+    """
+    for q in split_title(title)[1]:
+        folded = fold(q)
+        if not variant_counts(q) and not _KNOWN_NEUTRAL.search(folded):
+            return True
+    return False
+
+
 # --------------------------------------------------------------------------- #
 # Similarité
 # --------------------------------------------------------------------------- #
@@ -193,7 +280,10 @@ def similarity(a: str, b: str) -> float:
     >>> similarity("love", "love me do") < 0.6
     True
     """
+    raw_a, raw_b = a, b
     a, b = fold(a), fold(b)
+    if not a and not b:  # que de la ponctuation (le groupe « !!! ») : on compare tel quel
+        return 1.0 if raw_a.strip().casefold() == raw_b.strip().casefold() else 0.0
     direct = ratio(a, b)
     sorted_tokens = ratio(" ".join(sorted(a.split())), " ".join(sorted(b.split())))
     return max(direct, sorted_tokens)

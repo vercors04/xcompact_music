@@ -109,6 +109,47 @@ def test_title_containing_variant_word_is_not_penalised():
     assert decide(score_candidate(q, live)) is not Decision.ACCEPT
 
 
+def test_unrequested_guest_loses_to_solo_version():
+    # Cas réel (2026-10-03) : YouTube Music classe en tête la version avec Kanye West.
+    q = Query("Stromae - Alors on danse", "Stromae", "Alors on danse")
+    solo = cand("Alors on danse (Radio Edit)", ["Stromae"], "Alors On Danse", 208, 2)
+    # Tel que YouTube Music le présente : Kanye West dans le titre seulement…
+    kanye = cand("Alors On Danse (feat. Kanye West)", ["Stromae"], "Alors On Danse", 215, 0)
+    r = rank(q, [kanye, solo])
+    assert r[0].candidate is solo and decide(r[0]) is Decision.ACCEPT
+    # … ou crédité comme artiste : même résultat.
+    kanye2 = cand("Alors On Danse (feat. Kanye West)", ["Stromae", "Kanye West"], "Alors On Danse", 215, 0)
+    assert rank(q, [kanye2, solo])[0].candidate is solo
+
+
+def test_featuring_in_title_only_is_not_a_guest():
+    # Cas réel (2026-10-03) : l'original est « Angel (feat. Horace Andy) », crédité
+    # [Massive Attack] ; « Angel (Angel Dust) » est un remix au nom non reconnu.
+    q = Query("Massive Attack - Angel", "Massive Attack", "Angel")
+    original = cand("Angel (feat. Horace Andy)", ["Massive Attack"], "Mezzanine", 380, 0)
+    remix = cand("Angel (Angel Dust)", ["Massive Attack"], "Angel (Angel Dust)", 364, 7)
+    assert rank(q, [remix, original])[0].candidate is original
+
+
+def test_transliterated_cyrillic_query():
+    q = Query("Kino - Gruppa krovi", "Kino", "Gruppa krovi")
+    s = score_candidate(q, cand("Группа крови", ["Кино"], "Группа крови", 285))
+    assert decide(s) is Decision.ACCEPT
+
+
+def test_guest_only_version_is_still_accepted():
+    q = Query("Daft Punk - Get Lucky", "Daft Punk", "Get Lucky")
+    s = score_candidate(q, cand("Get Lucky (feat. Pharrell Williams and Nile Rodgers)",
+                                ["Daft Punk", "Pharrell Williams", "Nile Rodgers"], "Random Access Memories", 369))
+    assert decide(s) is Decision.ACCEPT
+
+
+def test_requested_guest_is_not_penalised():
+    q = Query("Daft Punk feat. Pharrell - Get Lucky", "Daft Punk feat. Pharrell", "Get Lucky")
+    s = score_candidate(q, cand("Get Lucky", ["Daft Punk", "Pharrell Williams"], "Random Access Memories", 369))
+    assert s.details["variants"] == 1.0
+
+
 def test_known_duration_discriminates_versions():
     # Requête venant d'une playlist : la durée attendue est connue (430 s).
     q = Query("Daft Punk - Around the World", "Daft Punk", "Around the World", duration=430)

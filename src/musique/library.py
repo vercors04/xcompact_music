@@ -23,7 +23,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from musique.models import TrackMeta
 from musique.textnorm import fold
@@ -180,6 +180,29 @@ def ensure_stignore(library: Path) -> bool:
     return True
 
 
+def rewrite_atomically(path: Path, library: Path, modify: Callable[[Path], None]) -> None:
+    """Modifie un fichier *déjà rangé* sans jamais pouvoir le corrompre.
+
+    mutagen réécrit les tags sur place : si le processus est tué au milieu (Android qui
+    ferme Termux, batterie vide), le fichier peut rester à moitié réécrit. On travaille
+    donc sur une copie dans .musique/tmp (même système de fichiers, ignoré par
+    Syncthing), puis `os.replace` remplace l'original d'un coup. En cas d'erreur ou
+    d'interruption, l'original est intact et la copie est supprimée.
+    """
+    try:
+        in_library = path.resolve().is_relative_to(library.resolve())
+    except OSError:
+        in_library = False
+    work = ensure_work_area(library) / "tmp" if in_library else path.parent
+    tmp = work / f".{uuid.uuid4().hex[:12]}{path.suffix}"
+    try:
+        shutil.copy2(path, tmp)
+        modify(tmp)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 @contextmanager
 def temp_dir(library: Path, max_age_h: float = 12) -> Iterator[Path]:
     """Dossier temporaire unique pour un téléchargement, supprimé à la sortie.
@@ -225,7 +248,9 @@ class LibraryIndex:
     tolérance de 2 s sur mtime car FAT32 n'a qu'une résolution de 2 s.
     """
 
-    VERSION = 1
+    # À incrémenter quand le format ou la normalisation des clés (textnorm.fold) change :
+    # l'index est alors reconstruit depuis les tags. 2 : fold() garde toutes les écritures.
+    VERSION = 2
 
     def __init__(self, library: Path, state_dir: Path):
         self.library = library
@@ -235,14 +260,23 @@ class LibraryIndex:
         self._load()
 
     def _load(self) -> None:
+        # L'index n'est qu'un cache : illisible ou d'un autre format → on repart de zéro,
+        # refresh() le reconstruit depuis les tags des fichiers.
         try:
             data = json.loads(self.file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            if data.get("library") != str(self.library):
+                return
+            # La mémoire « requête → fichier » survit à un changement de version : sans
+            # elle, une requête au résultat instable (classique : une autre interprétation
+            # chaque jour) serait retéléchargée en double. Constaté lors du passage à la
+            # version 2. refresh() élague les chemins disparus.
+            queries = {str(k): str(v) for k, v in data.get("queries", {}).items()}
+            entries = {}
+            if data.get("version") == self.VERSION:
+                entries = {k: IndexEntry(**v) for k, v in data.get("entries", {}).items()}
+        except (OSError, ValueError, TypeError, AttributeError):
             return
-        if data.get("version") != self.VERSION or data.get("library") != str(self.library):
-            return
-        self.entries = {k: IndexEntry(**v) for k, v in data.get("entries", {}).items()}
-        self.queries = data.get("queries", {})
+        self.entries, self.queries = entries, queries
 
     def save(self) -> None:
         self.file.parent.mkdir(parents=True, exist_ok=True)
@@ -264,8 +298,11 @@ class LibraryIndex:
         reread = 0
         for path in walk_audio(self.library):
             rel = path.relative_to(self.library).as_posix()
+            try:
+                st = path.stat()
+            except OSError:  # supprimé entre-temps (par Syncthing, par moi…)
+                continue
             seen.add(rel)
-            st = path.stat()
             old = self.entries.get(rel)
             if old and old.size == st.st_size and abs(old.mtime - st.st_mtime) <= 2:
                 continue

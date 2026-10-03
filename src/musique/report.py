@@ -46,6 +46,9 @@ def summary(results: list[Result]) -> str:
     return "Résumé : " + (" · ".join(parts) if parts else "rien à faire")
 
 
+KEEP_REPORTS = 100  # un rapport par lot : sans limite, des milliers de fichiers en quelques années
+
+
 def write_tsv(results: list[Result], reports_dir: Path) -> Path:
     reports_dir.mkdir(parents=True, exist_ok=True)
     path = reports_dir / time.strftime("%Y%m%d-%H%M%S.tsv")
@@ -59,4 +62,7 @@ def write_tsv(results: list[Result], reports_dir: Path) -> Path:
                 f"{b.score:.3f}" if b else "", b.candidate.label() if b else "",
                 b.candidate.source_id if b else "", str(r.path or ""), r.message,
             ])
+    # Les noms sont des dates AAAAMMJJ-HHMMSS : l'ordre alphabétique est l'ordre chronologique.
+    for old in sorted(reports_dir.glob("*.tsv"))[:-KEEP_REPORTS]:
+        old.unlink(missing_ok=True)
     return path

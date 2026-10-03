@@ -25,14 +25,14 @@ from typing import Callable
 from musique import ytdlp
 from musique.config import Config
 from musique.library import LibraryIndex, place_atomically, resolve_existing, temp_dir, track_relpath
-from musique.loudness import compute_gain, measure
+from musique.loudness import MeasureError, compute_gain, measure
 from musique.matching import decide, rank
 from musique.media import fetch_cover, probe
 from musique.models import Decision, Outcome, Query, Result, Scored
 from musique.musicbrainz import MBClient, enrich
 from musique.query import query_key
 from musique.sources.base import Source
-from musique.tagging import write_tags
+from musique.tagging import TagError, write_tags
 from musique.ytdlp import ErrorKind, SourceError
 
 log = logging.getLogger(__name__)
@@ -80,10 +80,19 @@ class Context:
 class PendingStore:
     def __init__(self, state_dir: Path):
         self.file = state_dir / "pending.json"
+        self.items: dict[str, dict] = {}
         try:
-            self.items: dict[str, dict] = json.loads(self.file.read_text(encoding="utf-8"))
+            data = json.loads(self.file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            self.items = {}
+            return
+        if not isinstance(data, dict):  # fichier abîmé : on repart de zéro
+            return
+        # On recalcule les clés depuis le contenu : si la normalisation des requêtes change
+        # dans une future version, les anciennes entrées ne deviennent pas des doublons.
+        for v in data.values():
+            if isinstance(v, dict) and v.get("raw"):
+                q = Query(raw=v["raw"], artist=v.get("artist"), title=v.get("title"))
+                self.items[query_key(q)] = v
 
     def add(self, q: Query, ranked: list[Scored]) -> None:
         self.items[query_key(q)] = {
@@ -99,8 +108,8 @@ class PendingStore:
             self.save()
 
     def queries(self) -> list[Query]:
-        return [Query(raw=v["raw"], artist=v["artist"], title=v["title"], duration=v["duration"], album=v["album"])
-                for v in self.items.values()]
+        return [Query(raw=v["raw"], artist=v.get("artist"), title=v.get("title"), duration=v.get("duration"),
+                      album=v.get("album")) for v in self.items.values()]
 
     def save(self) -> None:
         self.file.parent.mkdir(parents=True, exist_ok=True)
@@ -141,12 +150,25 @@ def _source_ok(ctx: Context, src_name: str) -> None:
 
 def process(q: Query, ctx: Context) -> Result:
     try:
-        return _process(q, ctx)
+        r = _process(q, ctx)
     except (StopBatch, KeyboardInterrupt):
         raise
+    except (MeasureError, TagError, OSError) as e:  # ffmpeg, mutagen, disque (plein, retiré…)
+        log.warning("%s : %s: %s", q.raw, type(e).__name__, e)
+        r = Result(q, Outcome.ERROR, f"{type(e).__name__}: {e}")
     except Exception as e:  # filet de sécurité : une requête ne tue jamais le lot
         log.exception("erreur inattendue pour %r", q.raw)
-        return Result(q, Outcome.ERROR, f"erreur inattendue : {type(e).__name__}: {e}")
+        r = Result(q, Outcome.ERROR, f"erreur inattendue : {type(e).__name__}: {e}")
+    # Une requête qui aboutit sort de la liste des douteux, quelle que soit la voie.
+    if r.outcome in (Outcome.DOWNLOADED, Outcome.PRESENT) and ctx.pending is not None and not ctx.dry_run:
+        ctx.pending.discard(q)
+    return r
+
+
+def _set_aside(ctx: Context, q: Query, ranked: list[Scored]) -> None:
+    """Met une requête douteuse de côté pour `musique review` (jamais en dry-run)."""
+    if ctx.pending is not None and not ctx.dry_run:
+        ctx.pending.add(q, ranked)
 
 
 def _process(q: Query, ctx: Context) -> Result:
@@ -183,17 +205,15 @@ def _process(q: Query, ctx: Context) -> Result:
 
     if decision is Decision.DOUBTFUL:
         if ctx.confirm is None:
-            if ctx.pending is not None and not ctx.dry_run:
-                ctx.pending.add(q, ranked)
+            _set_aside(ctx, q, ranked)
             return Result(q, Outcome.DOUBTFUL, "confiance insuffisante", best=best, alternatives=res_alts)
         try:
             chosen = ctx.confirm(q, ranked[:5])
         except Skip:
-            if ctx.pending is not None:
-                ctx.pending.add(q, ranked)
+            _set_aside(ctx, q, ranked)
             return Result(q, Outcome.DOUBTFUL, "laissé de côté", best=best, alternatives=res_alts)
-        if chosen is None:
-            if ctx.pending is not None:
+        if chosen is None:  # « aucun ne convient » : décision prise, on ne la repose plus
+            if ctx.pending is not None and not ctx.dry_run:
                 ctx.pending.discard(q)
             return Result(q, Outcome.NOT_FOUND, "aucun candidat retenu (choix manuel)", best=best)
         best = chosen
@@ -204,8 +224,6 @@ def _process(q: Query, ctx: Context) -> Result:
     if existing:
         ctx.index.remember_query(key, existing)
         ctx.index.save()
-        if ctx.pending is not None:
-            ctx.pending.discard(q)
         return Result(q, Outcome.PRESENT, "déjà présent (même source)", path=lib / existing, best=best)
 
     if ctx.dry_run:
@@ -222,8 +240,6 @@ def _process(q: Query, ctx: Context) -> Result:
         try:
             path, msg = _acquire(s, q, ctx)
             _source_ok(ctx, src_name)
-            if ctx.pending is not None:
-                ctx.pending.discard(q)
             outcome = Outcome.DOWNLOADED if msg != "present" else Outcome.PRESENT
             return Result(q, outcome, "déjà présent (même titre)" if msg == "present" else msg, path=path, best=s)
         except SourceError as e:

@@ -42,6 +42,38 @@ def test_missing_library_is_explained(tmp_path, monkeypatch):
         load(p)
 
 
+def test_toml_syntax_error_is_explained(tmp_path, monkeypatch):
+    monkeypatch.delenv("MUSIQUE_LIBRARY", raising=False)
+    p = tmp_path / "c.toml"
+    p.write_text('library = "/a\n', encoding="utf-8")  # guillemet oublié
+    with pytest.raises(ConfigError, match="syntaxe TOML"):
+        load(p)
+
+
+@pytest.mark.parametrize("toml, where", [
+    ('library = "/a"\n[matching]\naccept = "haut"\n', "accept"),
+    ('library = "/a"\nwake_lock = "oui"\n', "wake_lock"),
+    ('library = "/a"\nsearch_limit = 2.5\n', "search_limit"),
+    ('library = "/a"\nsources = "ytmusic"\n', "sources"),
+    ("library = 42\n", "library"),
+    ('library = "/a"\nmatching = 3\n', "matching"),
+])
+def test_wrong_types_are_rejected(tmp_path, monkeypatch, toml, where):
+    monkeypatch.delenv("MUSIQUE_LIBRARY", raising=False)
+    p = tmp_path / "c.toml"
+    p.write_text(toml, encoding="utf-8")
+    with pytest.raises(ConfigError, match=where):
+        load(p)
+
+
+def test_integer_accepted_for_float(tmp_path, monkeypatch):
+    monkeypatch.delenv("MUSIQUE_LIBRARY", raising=False)
+    p = tmp_path / "c.toml"
+    p.write_text('library = "/a"\n[loudness]\ntarget_lufs = -16\n', encoding="utf-8")
+    cfg = load(p)
+    assert cfg.loudness.target_lufs == -16.0 and isinstance(cfg.loudness.target_lufs, float)
+
+
 def test_inconsistent_thresholds(tmp_path, monkeypatch):
     monkeypatch.delenv("MUSIQUE_LIBRARY", raising=False)
     p = tmp_path / "c.toml"

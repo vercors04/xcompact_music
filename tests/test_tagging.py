@@ -67,6 +67,23 @@ def test_musicbrainz_ids_and_retag_roundtrip(tmp_path, ext):
         assert tags["MUSICBRAINZ_ARTISTID"] == ["a-1", "a-2"]
 
 
+@pytest.mark.parametrize("ext", list(ENCODERS))
+def test_rewritten_file_is_seen_as_up_to_date(tmp_path, ext):
+    """Sans ça, chaque `retag` réécrirait toute la bibliothèque (et Syncthing la renverrait)."""
+    from dataclasses import replace
+
+    from musique.tagging import has_cover, read_track_meta, same_metadata
+
+    p = make(tmp_path, ext)
+    assert not has_cover(p)
+    meta = replace(META, mbids={"track": "rec-1", "release": "rel-1", "release_group": "rg-1", "artists": ["a"]})
+    write_tags(p, meta, JPEG, GAIN)
+    back, _ = read_track_meta(p)
+    assert same_metadata(back, meta) and has_cover(p)
+    assert not same_metadata(back, replace(meta, year=1999))
+    assert not same_metadata(back, replace(meta, mbids={"track": "rec-1", "release": "AUTRE"}))
+
+
 def test_opus_uses_r128_only(tmp_path):
     p = make(tmp_path, ".opus")
     write_tags(p, META, JPEG, GAIN)

@@ -33,12 +33,24 @@ log = logging.getLogger("musique")
 # --------------------------------------------------------------------------- #
 
 
+class _ConsoleFormatter(logging.Formatter):
+    """À l'écran : le message seul, jamais la trace Python (elle reste dans le journal)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        saved = record.exc_info, record.exc_text
+        record.exc_info = record.exc_text = None
+        try:
+            return super().format(record)
+        finally:
+            record.exc_info, record.exc_text = saved
+
+
 def _setup_logging(cfg: Config | None, verbose: bool) -> None:
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
     console = logging.StreamHandler(sys.stderr)
     console.setLevel(logging.INFO if verbose else logging.WARNING)
-    console.setFormatter(logging.Formatter("  %(levelname)s %(message)s"))
+    console.setFormatter(_ConsoleFormatter("  %(levelname)s %(message)s"))
     root.addHandler(console)
     if cfg is not None:
         logdir = cfg.state_dir / "logs"
@@ -89,15 +101,26 @@ def playlist_queries(url: str) -> list[Query]:
     return out
 
 
+class UsageError(Exception):
+    """Erreur de l'utilisateur (fichier introuvable…) : message clair, pas de trace."""
+
+
 def _gather_queries(args) -> list[Query]:
     from musique.query import collect, read_lines
 
     lines: list[str] = list(args.queries)
     for f in args.file or []:
-        lines += read_lines(f)
+        try:
+            lines += read_lines(f)
+        except OSError as e:
+            raise UsageError(f"fichier de requêtes illisible : {f} ({e.strerror or e})") from e
     queries = collect(lines)
     for url in args.playlist or []:
-        queries += playlist_queries(url)
+        try:
+            queries += playlist_queries(url)
+        except Exception:  # URL invalide, playlist privée ou supprimée, réseau…
+            log.debug("playlist illisible : %s", url, exc_info=True)  # détail complet dans le journal
+            print(f"Playlist ignorée (introuvable, privée ou réseau indisponible) : {url}", file=sys.stderr)
     return queries
 
 
@@ -190,7 +213,7 @@ def cmd_review(cfg: Config, args) -> int:
 
 def cmd_gain(cfg: Config, args) -> int:
     """(Re)calcule les tags de gain, ou vérifie l'homogénéité (--check)."""
-    from musique.library import walk_audio, run_lock
+    from musique.library import rewrite_atomically, run_lock, walk_audio
     from musique.loudness import compute_gain, measure
     from musique.tagging import read_basic, write_tags
 
@@ -222,7 +245,7 @@ def cmd_gain(cfg: Config, args) -> int:
                 elif g is None or args.all:
                     loud = measure(p, cfg.ffmpeg, true_peak=lc.true_peak)
                     gain = compute_gain(loud, lc.target_lufs, lc.peak_ceiling_dbfs, lc.cap_positive_gain)
-                    write_tags(p, None, None, gain)
+                    rewrite_atomically(p, cfg.library, lambda f: write_tags(f, None, None, gain))
                     cap = " (plafonné)" if gain.capped else ""
                     print(f"[{i}/{len(paths)}] {loud.integrated_lufs:6.1f} LUFS → {gain.gain_db:+.1f} dB{cap}  {name}")
             except Exception as e:
@@ -241,13 +264,13 @@ def cmd_retag(cfg: Config, args) -> int:
     """Applique MusicBrainz à des fichiers existants (tags + pochette ; gain et audio intacts)."""
     import os
 
-    from musique.library import LibraryIndex, run_lock, track_relpath, walk_audio
+    from musique.library import LibraryIndex, rewrite_atomically, run_lock, track_relpath, walk_audio
     from musique.musicbrainz import MBClient, enrich
-    from musique.tagging import read_track_meta, write_tags
+    from musique.tagging import has_cover, read_track_meta, same_metadata, write_tags
 
     paths = [Path(p) for p in args.paths] if args.paths else sorted(walk_audio(cfg.library))
     client = MBClient(contact=cfg.metadata.contact)
-    n, done = len(paths), 0
+    n, done, unchanged = len(paths), 0, 0
     with run_lock(cfg.state_dir), wake_lock(cfg.wake_lock and not args.dry_run, cfg.release_wake_lock):
         for i, p in enumerate(paths, 1):
             name = p.relative_to(cfg.library).as_posix() if p.is_relative_to(cfg.library) else str(p)
@@ -265,6 +288,11 @@ def cmd_retag(cfg: Config, args) -> int:
                 ("titre", old.title, new.title), ("album", old.album, new.album), ("année", old.year, new.year))
                 if a != b]
             target = p.with_name(track_relpath(new, p.suffix, "flat").name) if args.rename else p
+            if same_metadata(old, new) and target == p and (e.cover is None or has_cover(p)):
+                # Rien à changer : on ne réécrit pas (sinon Syncthing renverrait le fichier).
+                print(f"[{i}/{n}] == {name} : déjà à jour")
+                unchanged += 1
+                continue
             if target != p:
                 changes.append(f"nom : {p.name!r} → {target.name!r}")
             print(f"[{i}/{n}] OK {name}")
@@ -274,7 +302,8 @@ def cmd_retag(cfg: Config, args) -> int:
                 print(f"      {ch}")
             if args.dry_run:
                 continue
-            write_tags(p, new, e.cover, None)  # gain inchangé ; pochette inchangée si MB n'en a pas
+            # Gain inchangé ; pochette inchangée si MusicBrainz n'en a pas.
+            rewrite_atomically(p, cfg.library, lambda f: write_tags(f, new, e.cover, None))
             if target != p:
                 if target.exists() and not os.path.samefile(target, p):
                     print(f"      !! {target.name} existe déjà : fichier non renommé")
@@ -285,7 +314,8 @@ def cmd_retag(cfg: Config, args) -> int:
             index = LibraryIndex(cfg.library, cfg.state_dir)
             index.refresh()
             index.save()
-    print(f"\n{done} fichier(s) mis à jour" + (" (dry-run : rien n'a été écrit)" if args.dry_run else ""))
+    print(f"\n{done} fichier(s) mis à jour, {unchanged} déjà à jour"
+          + (" (dry-run : rien n'a été écrit)" if args.dry_run else ""))
     return 0
 
 
@@ -339,6 +369,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from musique.library import AlreadyRunning
+
     fix_console_encoding()
     args = build_parser().parse_args(argv)
     try:
@@ -350,7 +382,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Configuration : {e}", file=sys.stderr)
         return 2
     _setup_logging(cfg, args.verbose)
-    return args.func(cfg, args)
+    # Codes de sortie : 0 ok, 1 erreur(s) pendant le traitement, 2 erreur d'utilisation,
+    # 3 déjà en cours, 130 interrompu (convention Unix pour Ctrl+C).
+    try:
+        return args.func(cfg, args)
+    except UsageError as e:
+        print(e, file=sys.stderr)
+        return 2
+    except AlreadyRunning as e:
+        print(f"{e} : attends qu'il se termine.", file=sys.stderr)
+        return 3
+    except KeyboardInterrupt:
+        print("\nInterrompu. Rien n'est à moitié écrit : les fichiers sont modifiés d'un coup ou pas du tout.",
+              file=sys.stderr)
+        return 130
+    except Exception as e:  # bug ou cas imprévu : message court, détails dans le journal
+        log.exception("erreur inattendue")
+        print(f"Erreur inattendue : {type(e).__name__}: {e}\nDétails : {cfg.state_dir / 'logs' / 'musique.log'}",
+              file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":  # pragma: no cover

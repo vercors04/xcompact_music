@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass, field, fields
+from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 
 if sys.version_info >= (3, 11):
@@ -22,6 +22,8 @@ else:  # pragma: no cover
     import tomli as tomllib
 
 from musique.matching import MatchConfig
+
+AVAILABLE_SOURCES = ("ytmusic",)  # à compléter quand une source est ajoutée dans sources/
 
 
 def _default_config_path() -> Path:
@@ -88,25 +90,67 @@ class ConfigError(ValueError):
     pass
 
 
-def _build(cls, data: dict, section: str):
-    known = {f.name for f in fields(cls)}
-    unknown = set(data) - known
+def _check_type(where: str, value, default):
+    """Vérifie qu'une valeur a le type de sa valeur par défaut (int accepté pour float).
+
+    Sans ça, `accept = "haut"` ne planterait qu'en plein lot, au premier calcul.
+    """
+    if isinstance(default, bool):
+        ok = isinstance(value, bool)
+    elif isinstance(default, float):
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+        value = float(value) if ok else value
+    elif isinstance(default, int):
+        ok = isinstance(value, int) and not isinstance(value, bool)
+    elif isinstance(default, (str, Path)):
+        ok = isinstance(value, str)
+    elif isinstance(default, list):
+        ok = isinstance(value, list) and all(isinstance(v, str) for v in value)
+    else:
+        ok = True
+    if not ok:
+        raise ConfigError(f"{where} = {value!r} : type attendu {type(default).__name__}")
+    return value
+
+
+def _defaults(cls) -> dict:
+    out = {}
+    for f in fields(cls):
+        if f.default is not MISSING:
+            out[f.name] = f.default
+        elif f.default_factory is not MISSING:
+            out[f.name] = f.default_factory()
+    return out
+
+
+def _build(cls, data, section: str):
+    if not isinstance(data, dict):
+        raise ConfigError(f"[{section}] doit être une section TOML")
+    defaults = _defaults(cls)
+    unknown = set(data) - set(defaults)
     if unknown:
         raise ConfigError(f"[{section}] clé(s) inconnue(s) : {', '.join(sorted(unknown))}")
-    return cls(**data)
+    return cls(**{k: _check_type(f"[{section}] {k}", v, defaults[k]) for k, v in data.items()})
 
 
 def load(path: str | Path | None = None) -> Config:
     cfg_path = Path(path or os.environ.get("MUSIQUE_CONFIG") or _default_config_path()).expanduser()
     data: dict = {}
     if cfg_path.exists():
-        with open(cfg_path, "rb") as fh:
-            data = tomllib.load(fh)
+        try:
+            with open(cfg_path, "rb") as fh:
+                data = tomllib.load(fh)
+        except tomllib.TOMLDecodeError as e:  # le message indique la ligne et la colonne
+            raise ConfigError(f"{cfg_path} : syntaxe TOML invalide ({e})") from e
+        except OSError as e:
+            raise ConfigError(f"{cfg_path} illisible : {e}") from e
     elif path:
         raise ConfigError(f"fichier de configuration introuvable : {cfg_path}")
 
     library = os.environ.get("MUSIQUE_LIBRARY") or data.pop("library", None)
     data.pop("library", None)
+    if library is not None and not isinstance(library, str):
+        raise ConfigError(f"library = {library!r} : un chemin entre guillemets est attendu")
     if not library:
         raise ConfigError(
             f"aucune bibliothèque configurée. Crée {cfg_path} avec par exemple :\n"
@@ -126,15 +170,18 @@ def load(path: str | Path | None = None) -> Config:
         if name in data:
             kwargs[name] = _build(cls, data.pop(name), name)
     if "state_dir" in data:
-        kwargs["state_dir"] = Path(data.pop("state_dir")).expanduser()
-    top = {f.name for f in fields(Config)} - set(sections) - {"library", "state_dir", "config_path"}
-    unknown = set(data) - top
+        kwargs["state_dir"] = Path(_check_type("state_dir", data.pop("state_dir"), "")).expanduser()
+    top = {k: v for k, v in _defaults(Config).items() if k not in sections and k not in ("state_dir", "config_path")}
+    unknown = set(data) - set(top)
     if unknown:
         raise ConfigError(f"clé(s) inconnue(s) : {', '.join(sorted(unknown))}")
-    kwargs.update(data)
+    kwargs.update({k: _check_type(k, v, top[k]) for k, v in data.items()})
     cfg = Config(library=Path(library).expanduser(), config_path=cfg_path if cfg_path.exists() else None, **kwargs)
     if not 0 < cfg.matching.doubtful <= cfg.matching.accept <= 1:
         raise ConfigError("il faut 0 < matching.doubtful ≤ matching.accept ≤ 1")
     if cfg.layout not in ("flat", "artist_album"):
         raise ConfigError(f'layout = "{cfg.layout}" inconnu (possibles : "flat", "artist_album")')
+    unknown_sources = [s for s in cfg.sources if s not in AVAILABLE_SOURCES]
+    if unknown_sources or not cfg.sources:
+        raise ConfigError(f"sources = {cfg.sources} : possibles {list(AVAILABLE_SOURCES)}")
     return cfg

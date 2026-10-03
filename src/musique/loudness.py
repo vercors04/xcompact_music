@@ -78,7 +78,13 @@ def measure(path: Path, ffmpeg: str = "ffmpeg", true_peak: bool = False, extra_f
     if extra_filter:
         af = f"{extra_filter},{af}"
     cmd = [ffmpeg, "-hide_banner", "-nostats", "-i", str(path), "-map", "0:a:0", "-af", af, "-f", "null", "-"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        # Délai maximal : ~4 s par titre sur le téléphone ; 10 min = fichier anormal (ou ffmpeg bloqué).
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
+    except subprocess.TimeoutExpired as e:
+        raise MeasureError("ffmpeg ne répond plus (plus de 10 min)") from e
+    except OSError as e:
+        raise MeasureError(f"ffmpeg introuvable ou inutilisable : {e}") from e
     if proc.returncode != 0:
         tail = "\n".join(proc.stderr.strip().splitlines()[-3:])
         raise MeasureError(f"ffmpeg a échoué ({proc.returncode}) : {tail}")

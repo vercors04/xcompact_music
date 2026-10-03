@@ -28,7 +28,10 @@ def probe(path: Path, ffprobe: str = "ffprobe") -> AudioInfo:
     """
     cmd = [ffprobe, "-v", "error", "-select_streams", "a:0", "-show_entries",
            "stream=codec_name,sample_rate,channels:format=duration,size", "-of", "json", str(path)]
-    out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"ffprobe a échoué : {e}") from e
     if out.returncode != 0:
         raise RuntimeError(f"ffprobe a échoué : {out.stderr.strip()[:200]}")
     data = json.loads(out.stdout or "{}")

@@ -36,11 +36,20 @@ def wake_lock(enabled: bool = True, release: bool = True) -> Iterator[None]:
     """
     active = enabled and is_termux() and shutil.which("termux-wake-lock") is not None
     if active:
-        subprocess.run(["termux-wake-lock"], check=False, timeout=30)
-        log.debug("wake-lock pris")
+        active = _run_quietly("termux-wake-lock")
     try:
         yield
     finally:
         if active and release and shutil.which("termux-wake-unlock"):
-            subprocess.run(["termux-wake-unlock"], check=False, timeout=30)
-            log.debug("wake-lock relâché")
+            _run_quietly("termux-wake-unlock")
+
+
+def _run_quietly(cmd: str) -> bool:
+    """Le wake-lock est un confort : s'il échoue ou bloque, on continue sans."""
+    try:
+        subprocess.run([cmd], check=False, timeout=30, capture_output=True)
+    except (OSError, subprocess.SubprocessError) as e:
+        log.info("%s a échoué (%s) : on continue sans", cmd, e)
+        return False
+    log.debug("%s : ok", cmd)
+    return True

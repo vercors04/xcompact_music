@@ -50,7 +50,8 @@ def run_checks(cfg: Config | None, args) -> int:
         _, filters = _run([ffmpeg, "-hide_banner", "-filters"])
         add(OK if "ebur128" in filters else FAIL, "ffmpeg", f"{v}" + ("" if "ebur128" in filters else " SANS ebur128"))
     ffprobe = cfg.ffprobe if cfg else "ffprobe"
-    add(OK if shutil.which(ffprobe) else FAIL, "ffprobe", "" if shutil.which(ffprobe) else "absent")
+    v = _tool_version(ffprobe, ["-hide_banner", "-version"], r"ffprobe version (\S+)")
+    add(OK if v else FAIL, "ffprobe", v or "absent. Termux : pkg install ffmpeg")
 
     # Runtime JavaScript pour yt-dlp
     deno = _tool_version("deno", ["--version"], r"deno (\d+\.\d+\.\d+)")
