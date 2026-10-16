@@ -1,3 +1,4 @@
+from pathlib import Path
 import os
 
 import pytest
@@ -141,3 +142,63 @@ def test_index_skips_hidden_dirs_and_tracks_changes(tmp_path):
     assert idx2.refresh() == (0, 0)
     os.remove(lib / "A" / "B" / "01 - x.opus")
     assert idx2.refresh() == (0, 1)
+
+
+
+def test_folder_rel_is_safe():
+    import pytest
+
+    from musique.library import folder_rel
+
+    assert folder_rel("Rock français").as_posix() == "Rock français"
+    for bad in ["", "..", "../x", "/abs", ".musique", ".cache/x"]:
+        with pytest.raises(ValueError):
+            folder_rel(bad)
+
+
+def test_move_into_folder_and_index_follows(tmp_path):
+    import pytest
+
+    from musique.library import LibraryIndex, move_into_folder
+
+    lib, state = tmp_path / "lib", tmp_path / "state"
+    lib.mkdir()
+    f = lib / "Eiffel - Sombre.opus"
+    f.write_bytes(b"x")
+    idx = LibraryIndex(lib, state)
+    idx.note_existing(f, "eiffel|sombre")
+    (lib / "rock FRANÇAIS").mkdir()  # dossier existant, casse différente : réutilisé
+    new = move_into_folder(lib, f, Path("Rock français"))
+    assert new == lib / "rock FRANÇAIS" / "Eiffel - Sombre.opus" and new.exists() and not f.exists()
+    idx.moved(f, new)
+    assert idx.by_query("eiffel|sombre") == "rock FRANÇAIS/Eiffel - Sombre.opus"
+    g = lib / "Eiffel - Sombre.opus"
+    g.write_bytes(b"y")
+    with pytest.raises(FileExistsError):  # jamais d'écrasement
+        move_into_folder(lib, g, Path("Rock français"))
+
+
+def test_query_memory_follows_a_file_moved_by_hand(tmp_path, monkeypatch):
+    """Fichier déplacé hors de l'outil (gestionnaire de fichiers) : la requête le retrouve."""
+    from musique import tagging
+    from musique.library import LibraryIndex
+
+    lib, state = tmp_path / "lib", tmp_path / "state"
+    (lib / "Rangé").mkdir(parents=True)
+    tags = {"Charlebois - Montréal.opus": "ytmusic:abc", "Autre.opus": "ytmusic:zzz"}
+    monkeypatch.setattr(tagging, "read_basic",
+                        lambda p: {"source": tags.get(p.name), "artist": "x", "title": p.stem})
+    for name in tags:
+        (lib / name).write_bytes(b"x")
+    idx = LibraryIndex(lib, state)
+    idx.refresh()
+    idx.remember_query("robert charlebois|je reviendrai a montreal", "Charlebois - Montréal.opus")
+    idx.remember_query("perdu|perdu", "Autre.opus")
+    idx.save()
+
+    (lib / "Charlebois - Montréal.opus").rename(lib / "Rangé" / "Charlebois - Montréal.opus")
+    (lib / "Autre.opus").unlink()  # supprimé pour de bon : la requête est oubliée
+    idx = LibraryIndex(lib, state)
+    idx.refresh()
+    assert idx.by_query("robert charlebois|je reviendrai a montreal") == "Rangé/Charlebois - Montréal.opus"
+    assert idx.by_query("perdu|perdu") is None and "perdu|perdu" not in idx.queries

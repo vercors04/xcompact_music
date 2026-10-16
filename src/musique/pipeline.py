@@ -25,7 +25,8 @@ from typing import Callable
 from musique import ytdlp
 from musique.config import Config
 from musique.device import media_scan
-from musique.library import LibraryIndex, place_atomically, resolve_existing, temp_dir, track_relpath
+from musique.library import (LibraryIndex, move_into_folder, place_atomically, resolve_existing, temp_dir,
+                             track_relpath)
 from musique.loudness import MeasureError, compute_gain, measure
 from musique.matching import decide, rank
 from musique.media import fetch_cover, probe
@@ -65,6 +66,9 @@ class Context:
     strikes: dict[str, int] = field(default_factory=dict)
     last_download: float = 0.0
     pending: "PendingStore | None" = None
+    # Dossier du lot (relatif à la bibliothèque, ex. « Rock français ») : les morceaux
+    # téléchargés y sont rangés, et ceux du lot restés à la racine y sont déplacés.
+    folder: Path | None = None
     _mb: MBClient | None = None
 
     def source(self, name: str) -> Source:
@@ -177,9 +181,40 @@ def _guarded(q: Query, ctx: Context, run: Callable[[], Result]) -> Result:
         log.exception("erreur inattendue pour %r", q.raw)
         r = Result(q, Outcome.ERROR, f"erreur inattendue : {type(e).__name__}: {e}")
     # Une requête qui aboutit sort de la liste des douteux, quelle que soit la voie.
+    if r.outcome is Outcome.PRESENT and ctx.folder is not None and not ctx.dry_run:
+        _file_present_into_folder(q, r, ctx)
     if r.outcome in (Outcome.DOWNLOADED, Outcome.PRESENT) and ctx.pending is not None and not ctx.dry_run:
         ctx.pending.discard(q)
     return r
+
+
+def _file_present_into_folder(q: Query, r: Result, ctx: Context) -> None:
+    """Morceau déjà présent *à la racine* : on le déplace dans le dossier du lot.
+
+    Seulement depuis la racine (là où arrivent les fichiers non rangés) : un fichier que
+    j'ai déjà rangé dans un autre dossier y reste (un fichier ne peut pas être dans deux
+    dossiers ; on ne défait pas un rangement manuel). Un échec n'annule rien : le
+    fichier reste où il est.
+    """
+    lib = ctx.cfg.library
+    if r.path is None or r.path.parent != lib or not r.path.exists():
+        if r.path is not None and r.path.parent != lib and r.path.exists():
+            r.message += f" (laissé dans {r.path.parent.relative_to(lib).as_posix()}/)"
+        return
+    old = r.path
+    try:
+        new = move_into_folder(lib, old, ctx.folder)
+    except OSError as e:
+        log.warning("%s : déplacement dans %s impossible (%s)", old.name, ctx.folder, e)
+        r.message += f" (non déplacé : {e})"
+        return
+    ctx.index.moved(old, new)
+    if new.relative_to(lib).as_posix() not in ctx.index.entries:
+        ctx.index.note_existing(new, query_key(q))
+    ctx.index.save()
+    media_scan([old, new], ctx.cfg.media_scan)  # ancien chemin retiré de l'index Android, nouveau ajouté
+    r.path = new
+    r.message += f" → rangé dans {ctx.folder.as_posix()}/"
 
 
 def _set_aside(ctx: Context, q: Query, ranked: list[Scored]) -> None:
@@ -195,6 +230,17 @@ def _process(q: Query, ctx: Context) -> Result:
     rel = ctx.index.by_query(key)
     if rel:
         return Result(q, Outcome.PRESENT, "déjà téléchargé (requête connue)", path=lib / rel)
+
+    if q.url:  # lien direct : pas de recherche ni de seuil, cette vidéo-là
+        src = next((s for s in ctx.sources if hasattr(s, "from_url") and s.name not in ctx.disabled), None)
+        if src is None:
+            return Result(q, Outcome.ERROR, "aucune source active ne sait lire un lien")
+        try:
+            c = src.from_url(q.url)
+        except SourceError as e:
+            _source_failed(ctx, src.name, e)
+            return Result(q, Outcome.ERROR, f"lien illisible ({e.kind.value}) : {e}")
+        return _fetch(q, Scored(c, 1.0, {"lien": 1.0}), [], [], ctx)
 
     # 1. Recherche dans toutes les sources actives
     candidates, errors = [], []
@@ -284,6 +330,10 @@ def _fetch(q: Query, best: Scored, fallbacks: list[Scored], alternatives: list[S
     return Result(q, Outcome.ERROR, last_error or "échec du téléchargement", best=best)
 
 
+def _in_folder(ctx: Context, rel: Path) -> Path:
+    return ctx.folder / rel if ctx.folder is not None else rel
+
+
 def _acquire(s: Scored, q: Query, ctx: Context) -> tuple[Path, str]:
     """Télécharge, vérifie, mesure, tague et range un candidat. Renvoie (chemin, message)."""
     cfg, lib = ctx.cfg, ctx.cfg.library
@@ -300,15 +350,18 @@ def _acquire(s: Scored, q: Query, ctx: Context) -> tuple[Path, str]:
 
     # Même morceau déjà présent (autre videoId, ou fichier que tu as renommé/déplacé) ?
     # 1) mêmes tags artiste + titre n'importe où dans la bibliothèque ;
-    # 2) même nom de fichier à l'emplacement prévu (extension la plus probable).
+    # 2) même nom de fichier à l'emplacement prévu (dossier du lot, ou racine), extension
+    #    la plus probable.
     existing = ctx.index.by_artist_title(meta.artist_display, meta.title)
     if existing:
         ctx.index.remember_query(query_key(q), existing)
         ctx.index.save()
         return lib / existing, "present"
     for ext in (".opus", ".m4a"):
-        probable = resolve_existing(lib, track_relpath(meta, ext, cfg.layout))
-        if probable.exists():
+        rel = track_relpath(meta, ext, cfg.layout)
+        for probable in dict.fromkeys(resolve_existing(lib, r) for r in (_in_folder(ctx, rel), rel)):
+            if not probable.exists():
+                continue
             ctx.index.note_existing(probable, query_key(q))
             ctx.index.save()
             return probable, "present"
@@ -341,7 +394,7 @@ def _acquire(s: Scored, q: Query, ctx: Context) -> tuple[Path, str]:
             cover_src = "YTM" if cover else ""
         write_tags(audio, meta, cover, gain)
 
-        dest = resolve_existing(lib, track_relpath(meta, audio.suffix, cfg.layout))
+        dest = resolve_existing(lib, _in_folder(ctx, track_relpath(meta, audio.suffix, cfg.layout)))
         if dest.exists():  # cas rare (extension inattendue) : on ne remplace jamais
             ctx.index.note_existing(dest, query_key(q))
             ctx.index.save()

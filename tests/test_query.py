@@ -38,3 +38,40 @@ def test_read_lines_handles_bom_and_crlf(tmp_path):
     p.write_bytes("﻿Daft Punk - One More Time\r\nRadiohead - Creep\r\n".encode("utf-8"))
     qs = collect(read_lines(p))
     assert [q.artist for q in qs] == ["Daft Punk", "Radiohead"]
+
+
+def test_read_csv_chosic_format(tmp_path):
+    from musique.query import read_csv
+
+    p = tmp_path / "jaime.csv"
+    p.write_text(
+        "\ufeff#,Song,Artist,BPM,Duration,Album\n"
+        '1,"Colors","Black Pumas",120,04:07,"Black Pumas"\n'
+        '2,"Palabra Mi Amor","Shaka Ponk,Bertrand Cantat",130,03:31,"The Black Pixel Ape"\n'
+        '3,"Colors","Black Pumas",120,04:07,"Black Pumas"\n'
+        '4,"","Inconnu",0,,\n',
+        encoding="utf-8")
+    qs = read_csv(p)
+    assert [(q.artist, q.title, q.duration) for q in qs] == [
+        ("Black Pumas", "Colors", 247), ("Shaka Ponk, Bertrand Cantat", "Palabra Mi Amor", 211)]
+
+
+def test_read_csv_exportify_format(tmp_path):
+    from musique.query import read_csv
+
+    p = tmp_path / "e.csv"
+    p.write_text('Track Name,Artist Name(s),Album Name,Duration (ms)\nCreep,Radiohead,Pablo Honey,238640\n',
+                 encoding="utf-8")
+    (q,) = read_csv(p)
+    assert (q.raw, q.duration, q.album) == ("Radiohead - Creep", 238.64, "Pablo Honey")
+
+
+def test_read_csv_without_title_column(tmp_path):
+    import pytest
+
+    from musique.query import read_csv
+
+    p = tmp_path / "x.csv"
+    p.write_text("a,b\n1,2\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_csv(p)

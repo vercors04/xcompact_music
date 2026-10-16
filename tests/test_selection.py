@@ -1,6 +1,7 @@
 """Choix manuel de fin de lot, recherche fusionnée, invités et playlists."""
 
 import pytest
+from pathlib import Path
 
 from musique.matching import rank
 from musique.models import Candidate, Outcome, Quality, Query, TrackMeta
@@ -300,3 +301,116 @@ def test_playlist_video_duration_is_ignored(monkeypatch):
         ("Black Pumas", "Colors", None),
         ("Daft Punk", "Around The World", None),
     ]
+
+
+
+def test_cli_csv_into_folder(tmp_path, monkeypatch, capsys):
+    """Lot CSV avec --dossier : nouveaux fichiers dans le dossier, ceux de la racine y
+    sont déplacés, ceux déjà rangés ailleurs restent ; relancer ne fait rien de plus."""
+    import musique.sources
+    from musique import cli, pipeline
+
+    monkeypatch.delenv("MUSIQUE_LIBRARY", raising=False)
+    lib = tmp_path / "lib"
+    (lib / "Mes favoris").mkdir(parents=True)
+    conf = tmp_path / "c.toml"
+    conf.write_text(f"library = '{lib}'\nstate_dir = '{tmp_path / 'state'}'\nwake_lock = false\n"
+                    "[download]\nsleep_between_s = 0.0\n", encoding="utf-8")
+    csvf = tmp_path / "rock.csv"
+    csvf.write_text("Song,Artist,Duration\nSombre,Eiffel,04:10\nSoledad,Luke,03:30\nNoir,Désir,03:00\n",
+                    encoding="utf-8")
+
+    class Src:
+        name = "ytmusic"
+
+        def search(self, q, limit):
+            return {"Sombre": [cand("e1", "Sombre", ["Eiffel"], duration=250)],
+                    "Soledad": [cand("l1", "Soledad", ["Luke"], duration=210)],
+                    "Noir": [cand("n1", "Noir", ["Désir"], duration=180)]}[q.title]
+
+    def acquire(s, q, ctx):  # comme le vrai _acquire : range dans le dossier du lot
+        from musique.query import query_key
+
+        dest = ctx.cfg.library / pipeline._in_folder(ctx, Path(f"{s.candidate.id}.opus"))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"x")
+        ctx.index.add(dest, s.candidate.source_id, ", ".join(s.candidate.artists), s.candidate.title, query_key(q))
+        return dest, "ok"
+
+    # Déjà là avant le lot : l1 à la racine (non rangé), n1 rangé à la main ailleurs.
+    from musique.library import LibraryIndex
+    from musique.config import load
+
+    cfg = load(conf)
+    idx = LibraryIndex(lib, cfg.state_dir)
+    for rel, sid in (("l1.opus", "ytmusic:l1"), ("Mes favoris/n1.opus", "ytmusic:n1")):
+        (lib / rel).write_bytes(b"x")
+        idx.add(lib / rel, sid, "", "", None)
+    idx.save()
+    monkeypatch.setattr(musique.sources, "build_sources", lambda cfg: [Src()])
+    monkeypatch.setattr(pipeline, "_acquire", acquire)
+    monkeypatch.setattr("musique.library.LibraryIndex.refresh", lambda self: (0, 0))  # fichiers factices
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+
+    assert cli.main(["get", "-f", str(csvf), "--dossier", "Rock français", "--config", str(conf)]) == 0
+    files = sorted(p.relative_to(lib).as_posix() for p in lib.rglob("*.opus"))
+    assert files == ["Mes favoris/n1.opus", "Rock français/e1.opus", "Rock français/l1.opus"]
+    out = capsys.readouterr().out
+    assert "rangé dans Rock français/" in out and "laissé dans Mes favoris/" in out
+
+    assert cli.main(["get", "-f", str(csvf), "--dossier", "Rock français", "--config", str(conf)]) == 0
+    assert sorted(p.relative_to(lib).as_posix() for p in lib.rglob("*.opus")) == files
+    assert "Résumé : 3 déjà présent" in capsys.readouterr().out
+
+
+def test_remixer_counts_as_artist():
+    from musique.matching import score_candidate
+
+    q = Query("Léonie Pernet, Malik Djoudi - Butterfly - Malik Djoudi Remix", "Léonie Pernet, Malik Djoudi",
+              "Butterfly - Malik Djoudi Remix")
+    s = score_candidate(q, cand("x", "Butterfly (Malik Djoudi Remix)", ["Léonie Pernet"]))
+    assert s.details["artist"] == 1.0 and s.score >= 0.99  # 0,83 avant
+
+
+def test_single_mix_is_a_soft_variant():
+    from musique.textnorm import variant_counts
+
+    assert variant_counts("Au conditionnel (Single mix)") == {"edit": 1}
+    assert variant_counts("Strobe (Club Mix)") == {"remix": 1, "extended": 1}
+    q = Query("Matmatah - Au conditionnel", "Matmatah", "Au conditionnel", duration=210)
+    best = rank(q, [cand("m", "Au conditionnel (Single mix)", ["Matmatah"], duration=209)])[0]
+    assert best.score >= 0.85
+
+
+def test_dash_artist_is_quoted_in_search():
+    from musique.config import Config
+    from musique.sources.ytmusic import YTMusicSource
+
+    src = YTMusicSource(Config(library=None))
+    src._yt = FakeYT()
+    src.search(Query("-M- - Mojo", "-M-", "Mojo"), 10)
+    assert src._yt.texts == ['"-M-" Mojo', '"-M-" - Mojo']
+
+
+def test_direct_link_downloads_that_video(tmp_path, monkeypatch):
+    """Lien YouTube : pas de recherche, pas de seuil ; relancer ne retélécharge pas."""
+    from musique import pipeline
+    from musique.query import parse_query
+
+    monkeypatch.delenv("MUSIQUE_LIBRARY", raising=False)
+    calls = []
+    monkeypatch.setattr(pipeline, "_acquire", fake_acquire(calls))
+
+    class Src(FakeSource):
+        def search(self, q, limit):
+            raise AssertionError("un lien ne doit pas déclencher de recherche")
+
+        def from_url(self, url):
+            assert url == "https://www.youtube.com/watch?v=yzrz5u_q_e8"
+            return cand("yzrz5u_q_e8", "Vive la commune", ["10 rue d'la Madeleine"], duration=224)
+
+    ctx = make_ctx(tmp_path, Src())
+    q = parse_query("https://youtu.be/yzrz5u_q_e8?si=abc")
+    r = pipeline.process(q, ctx)
+    assert r.outcome is Outcome.DOWNLOADED and calls == ["yzrz5u_q_e8"]
+    assert pipeline.process(parse_query("https://www.youtube.com/watch?v=yzrz5u_q_e8"), ctx).outcome is Outcome.PRESENT

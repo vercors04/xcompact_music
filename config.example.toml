@@ -24,7 +24,7 @@ library = "/storage/C1B3-16F0/Music"
 # search_limit = 10            # résultats lus par recherche (2 recherches par requête « Artiste - Titre »)
 # wake_lock = true             # Termux : empêche la veille pendant un lot
 # release_wake_lock = true     # relâcher à la fin (relâche aussi un verrou pris à la main !)
-# media_scan = true            # Termux : faire apparaître les nouveaux fichiers dans les applis musique
+# media_scan = true            # Termux : signaler les nouveaux fichiers à MediaStore (inutile pour Auxio en source par défaut)
 
 [matching]
 # accept = 0.85                # ≥ : téléchargé sans demander

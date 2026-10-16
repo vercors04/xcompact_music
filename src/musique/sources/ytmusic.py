@@ -22,8 +22,8 @@ from pathlib import Path
 
 from musique.config import Config
 from musique.models import Candidate, Quality, Query, TrackMeta
-from musique.textnorm import dedupe_qualifiers, fold
-from musique.ytdlp import ErrorKind, SourceError, download_audio
+from musique.textnorm import dedupe_qualifiers, fold, video_title_parts
+from musique.ytdlp import ErrorKind, SourceError, download_audio, video_info
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +39,17 @@ def sized_cover_url(url: str, size: int, quality: int) -> str:
     if "googleusercontent.com" not in url:
         return url
     return _GSIZE.sub(f"=w{size}-h{size}-l{quality}-rj", url)
+
+
+def search_safe(text: str) -> str:
+    """Met entre guillemets les mots qui commencent par « - » : le moteur de YouTube Music
+    les prend pour une *exclusion*. Cas réel : « -M- Mojo » renvoyait Mojo Nixon, Kid
+    Cudi… (« sans M »), alors que « "-M-" Mojo » renvoie le morceau de -M- en tête.
+
+    >>> search_safe("-M- Mojo"), search_safe("AC-DC Thunderstruck")
+    ('"-M-" Mojo', 'AC-DC Thunderstruck')
+    """
+    return " ".join(f'"{w}"' if w.startswith("-") and len(w) > 1 else w for w in text.split())
 
 
 def _year(value) -> int | None:
@@ -98,9 +109,10 @@ class YTMusicSource:
         ~0,4 s par requête.
         """
         if query.artist and query.title:
-            texts = [f"{query.artist} {query.title}", f"{query.artist} - {query.title}"]
+            artist = search_safe(query.artist)
+            texts = [f"{artist} {query.title}", f"{artist} - {query.title}"]
         else:
-            texts = [query.raw]
+            texts = [search_safe(query.raw)]
         best: dict[str, tuple[int, int, Candidate]] = {}  # videoId → (position, n° de recherche, candidat)
         failures: list[SourceError] = []
         for n, text in enumerate(texts):
@@ -120,6 +132,25 @@ class YTMusicSource:
             c.rank = pos
             out.append(c)
         return out
+
+    def from_url(self, url: str) -> Candidate:
+        """Candidat pour une vidéo précise (lien donné par l'utilisateur), sans recherche.
+
+        Pour un morceau absent des pistes officielles (cas réel : « 10 Rue d'la Madeleine -
+        Vive la commune », seulement en vidéos de particuliers). Artiste et titre sont
+        tirés du titre de la vidéo ; MusicBrainz complète ensuite comme d'habitude.
+        """
+        d = self.cfg.download
+        info = video_info(url, js_runtime=d.js_runtime, cookies_file=d.cookies_file)
+        artist, title = video_title_parts(info.get("title") or "", info.get("channel") or info.get("uploader") or "")
+        return Candidate(
+            source=self.name,
+            id=info["id"],
+            title=title or (info.get("title") or info["id"]),
+            artists=[artist] if artist else [],
+            duration=info.get("duration"),
+            quality=Quality("opus", 160),
+        )
 
     def _candidates(self, results: list[dict]) -> list[Candidate]:
         out: list[Candidate] = []

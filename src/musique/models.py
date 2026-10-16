@@ -27,6 +27,9 @@ class Query:
     title: str | None = None
     duration: float | None = None
     album: str | None = None
+    # Lien direct vers une vidéo YouTube : pas de recherche, cette vidéo-là est téléchargée
+    # (pour un morceau absent des pistes officielles de YouTube Music).
+    url: str | None = None
 
 
 @dataclass(frozen=True)

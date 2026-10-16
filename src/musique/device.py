@@ -48,15 +48,21 @@ def wake_lock(enabled: bool = True, release: bool = True) -> Iterator[None]:
 
 def media_scan(paths: list[Path], enabled: bool = True) -> int:
     """Signale des fichiers à l'index des médias d'Android (MediaStore). Renvoie le nombre
-    de fichiers signalés (0 hors Termux).
+    de diffusions qu'`am` a envoyées sans erreur (0 hors Termux). Ce n'est pas une preuve
+    d'indexation : `am` sort avec 0 même si aucun récepteur ne reçoit la diffusion.
 
-    Pourquoi : les applis musique (Auxio…) ne listent que ce que MediaStore connaît.
-    Constaté le 2026-10-03 : les fichiers rangés par l'outil n'y apparaissaient pas tant
-    qu'on ne les avait pas ouverts depuis le gestionnaire de fichiers. Cause probable (non
-    vérifiée) : ils sont écrits dans .musique/ (qui contient un .nomedia, donc ignoré par
-    Android) puis *renommés* dans la bibliothèque, et ce renommage ne déclenche pas
-    d'indexation. Vérifié : une diffusion MEDIA_SCANNER_SCAN_FILE par `am` (fourni par
-    Termux, sans Termux:API) fait apparaître le fichier ; ~0,5 s par fichier.
+    Pourquoi : les applis qui lisent MediaStore (appli Musique d'origine, Auxio en source
+    « Système ») ne listent que ce qu'il connaît. Constaté le 2026-10-03 avec l'appli
+    d'origine : les fichiers rangés par l'outil n'y apparaissaient pas tant qu'on ne les
+    avait pas ouverts depuis le gestionnaire de fichiers. Cause probable (non vérifiée) :
+    ils sont écrits dans .musique/ (qui contient un .nomedia, donc ignoré par Android) puis
+    *renommés* dans la bibliothèque, et ce renommage ne déclenche pas d'indexation.
+    Vérifié : une diffusion MEDIA_SCANNER_SCAN_FILE par `am` (fourni par Termux, sans
+    Termux:API) fait apparaître le fichier ; ~0,5 s par fichier.
+
+    Sans effet sur Auxio 4.x en source par défaut (« sélecteur de fichiers ») : il parcourt
+    lui-même ses dossiers et ne recharge qu'au démarrage de son processus ou sur
+    « Actualiser la musique » (constaté le 2026-10-16).
 
     Signaler un chemin qui n'existe plus retire son entrée de l'index (ancien nom après un
     renommage). Un échec n'est jamais bloquant : le fichier est là, seul l'affichage tarde.
@@ -76,7 +82,7 @@ def media_scan(paths: list[Path], enabled: bool = True) -> int:
             done += 1
         else:
             log.info("indexation Android refusée (%s) : %s", (r.stderr or r.stdout).strip()[:200], p)
-    log.debug("MediaStore : %d/%d fichier(s) signalé(s)", done, len(paths))
+    log.debug("MediaStore : %d/%d diffusion(s) envoyée(s)", done, len(paths))
     return done
 
 

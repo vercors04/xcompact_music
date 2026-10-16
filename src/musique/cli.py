@@ -71,13 +71,13 @@ def _setup_logging(cfg: Config | None, verbose: bool) -> None:
 # --------------------------------------------------------------------------- #
 
 _LIST_ID = re.compile(r"[?&]list=([\w-]+)")
-_VIDEO_SUFFIX = re.compile(r"\s*[\(\[](?:official|officiel|clip|lyrics?|audio|video|vid[ée]o|hd|4k|visuali[sz]er)[^\)\]]*[\)\]]",
-                           re.I)
 
 
 def playlist_queries(url: str) -> list[Query]:
     """Requêtes à partir d'une playlist YouTube / YouTube Music (avec durées)."""
     from ytmusicapi import YTMusic
+
+    from musique.textnorm import video_title_parts
 
     m = _LIST_ID.search(url)
     pid = m.group(1) if m else url
@@ -93,11 +93,7 @@ def playlist_queries(url: str) -> list[Query]:
             # générique : « Colors (Official Music Video) » 4:25 pour un morceau de 4:07,
             # assez pour une pénalité de durée), et son titre porte « (Official Video) ».
             dur = None
-            if " - " in title:
-                # « Artiste - Titre (Official Video) » : la chaîne (« ArtisteVEVO ») est un
-                # mauvais artiste, le titre de la vidéo est meilleur.
-                artist, title = title.split(" - ", 1)
-            title = _VIDEO_SUFFIX.sub("", title).strip()
+            artist, title = video_title_parts(title, artist)
         if not title:
             continue
         album = (t.get("album") or {}).get("name")
@@ -111,22 +107,24 @@ class UsageError(Exception):
 
 
 def _gather_queries(args) -> list[Query]:
-    from musique.query import collect, read_lines
+    from musique.query import collect, dedupe, read_csv, read_lines
 
-    lines: list[str] = list(args.queries)
+    queries: list[Query] = collect(args.queries)
     for f in args.file or []:
         try:
-            lines += read_lines(f)
+            # Export CSV de playlist (Spotify…) : durées connues, matching plus sûr.
+            queries += read_csv(f) if str(f).lower().endswith(".csv") else collect(read_lines(f))
         except OSError as e:
             raise UsageError(f"fichier de requêtes illisible : {f} ({e.strerror or e})") from e
-    queries = collect(lines)
+        except (ValueError, UnicodeDecodeError) as e:
+            raise UsageError(f"fichier de requêtes invalide : {f} ({e})") from e
     for url in args.playlist or []:
         try:
             queries += playlist_queries(url)
         except Exception:  # URL invalide, playlist privée ou supprimée, réseau…
             log.debug("playlist illisible : %s", url, exc_info=True)  # détail complet dans le journal
             print(f"Playlist ignorée (introuvable, privée ou réseau indisponible) : {url}", file=sys.stderr)
-    return queries
+    return dedupe(queries)
 
 
 # --------------------------------------------------------------------------- #
@@ -246,8 +244,9 @@ def offer_choices(results: list[Result]) -> list[tuple[int, Scored]]:
 # --------------------------------------------------------------------------- #
 
 
-def _run_batch(cfg: Config, queries: list[Query], dry_run: bool, confirm: bool, verbose: bool) -> int:
-    from musique.library import LibraryIndex, run_lock
+def _run_batch(cfg: Config, queries: list[Query], dry_run: bool, confirm: bool, verbose: bool,
+               folder: str | None = None) -> int:
+    from musique.library import LibraryIndex, folder_rel, run_lock
     from musique.pipeline import Context, PendingStore, StopBatch, process, process_chosen
     from musique.report import line, summary, write_tsv
     from musique.sources import build_sources
@@ -258,6 +257,10 @@ def _run_batch(cfg: Config, queries: list[Query], dry_run: bool, confirm: bool, 
     if not cfg.library.is_dir():
         print(f"Bibliothèque introuvable : {cfg.library}")
         return 2
+    try:
+        folder_path = folder_rel(folder) if folder else None
+    except ValueError as e:
+        raise UsageError(str(e)) from e
 
     results: list[Result] = []
     with run_lock(cfg.state_dir), wake_lock(cfg.wake_lock and not dry_run, cfg.release_wake_lock):
@@ -266,9 +269,11 @@ def _run_batch(cfg: Config, queries: list[Query], dry_run: bool, confirm: bool, 
         index.save()
         log.debug("index : %d fichiers relus, %d disparus, %d au total", reread, gone, len(index.entries))
         ctx = Context(cfg=cfg, sources=build_sources(cfg), index=index, dry_run=dry_run,
-                      confirm=interactive_confirm if confirm else None, pending=PendingStore(cfg.state_dir))
+                      confirm=interactive_confirm if confirm else None, pending=PendingStore(cfg.state_dir),
+                      folder=folder_path)
         n = len(queries)
-        print(f"{n} requête(s) · bibliothèque : {cfg.library}" + (" · DRY-RUN" if dry_run else ""))
+        where = cfg.library / folder_path if folder_path else cfg.library
+        print(f"{n} requête(s) · dossier : {where}" + (" · DRY-RUN" if dry_run else ""))
         try:
             for i, q in enumerate(queries, 1):
                 r = process(q, ctx)
@@ -304,7 +309,7 @@ def _run_batch(cfg: Config, queries: list[Query], dry_run: bool, confirm: bool, 
 
 
 def cmd_get(cfg: Config, args) -> int:
-    return _run_batch(cfg, _gather_queries(args), args.dry_run, args.confirm, args.verbose)
+    return _run_batch(cfg, _gather_queries(args), args.dry_run, args.confirm, args.verbose, args.dossier)
 
 
 def cmd_review(cfg: Config, args) -> int:
@@ -441,9 +446,11 @@ def cmd_scan(cfg: Config, args) -> int:
     if not paths:
         print("Aucun fichier audio.")
         return 0
-    print(f"{len(paths)} fichier(s) à signaler à Android (~0,5 s chacun)…")
+    print(f"{len(paths)} fichier(s) à signaler à l'index des médias d'Android (~0,5 s chacun)…")
     n = media_scan(paths)
-    print(f"{n}/{len(paths)} signalé(s). Ils apparaissent dans les applis musique d'ici quelques secondes.")
+    # `am` ne dit pas si la diffusion a été reçue : on compte les envois, pas l'indexation.
+    print(f"{n}/{len(paths)} diffusion(s) envoyée(s). Utile pour les applis qui lisent l'index "
+          "(appli d'origine, Auxio en source « Système ») ; Auxio par défaut : « Actualiser la musique ».")
     return 0 if n == len(paths) else 1
 
 
@@ -470,10 +477,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     g = add("get", help="télécharger des morceaux")
     g.add_argument("queries", nargs="*", help='requêtes « Artiste - Titre »')
-    g.add_argument("-f", "--file", action="append", help="fichier de requêtes (une par ligne, # = commentaire, - = stdin)")
+    g.add_argument("-f", "--file", action="append",
+                   help="fichier de requêtes (une par ligne, # = commentaire, - = stdin) ou export CSV de playlist")
     g.add_argument("-p", "--playlist", action="append", help="URL de playlist YouTube / YouTube Music")
     g.add_argument("-n", "--dry-run", action="store_true", help="montrer ce qui serait téléchargé, sans rien faire")
     g.add_argument("-c", "--confirm", action="store_true", help="demander pour chaque requête douteuse")
+    g.add_argument("-d", "--dossier", metavar="NOM",
+                   help="ranger les morceaux du lot dans <bibliothèque>/NOM/ (ceux déjà à la racine y sont déplacés)")
     g.set_defaults(func=cmd_get)
 
     r = add("review", help="traiter les requêtes douteuses mises de côté")

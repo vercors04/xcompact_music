@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 import unicodedata
@@ -146,6 +147,42 @@ def place_atomically(src: Path, dest: Path, retries: int = 3) -> Path:
                 raise
             time.sleep(1.0 + attempt)
     return dest
+
+
+# --------------------------------------------------------------------------- #
+# Dossiers de lot (« Rock français/ »…)
+# --------------------------------------------------------------------------- #
+
+
+def folder_rel(name: str) -> Path:
+    """Nom de dossier donné par l'utilisateur → chemin relatif sûr dans la bibliothèque.
+
+    Chaque niveau passe par sanitize_component (règles FAT32) ; « .. » et les chemins
+    absolus sont refusés : on ne range jamais hors de la bibliothèque.
+
+    >>> folder_rel("Rock français").as_posix(), folder_rel("Rock/Français: 90s").as_posix()
+    ('Rock français', 'Rock/Français - 90s')
+    """
+    parts = [p for p in name.replace("\\", "/").split("/") if p.strip()]
+    # « /x » n'est pas « absolu » pour Python sous Windows (pas de lecteur) : on teste à la main.
+    absolute = name.strip().startswith(("/", "\\")) or re.match(r"[A-Za-z]:", name.strip()) is not None
+    if not parts or absolute or any(p.strip() in (".", "..") for p in parts):
+        raise ValueError(f"nom de dossier invalide : {name!r} (un nom relatif à la bibliothèque)")
+    if parts[0].startswith(".") or parts[0].strip() == WORK_DIRNAME:
+        raise ValueError(f"nom de dossier invalide : {name!r} (dossier caché)")
+    return Path(*(sanitize_component(p) for p in parts))
+
+
+def move_into_folder(library: Path, path: Path, folder: Path) -> Path:
+    """Déplace un fichier dans <bibliothèque>/<folder>/ (renommage atomique, même nom).
+
+    Ne remplace jamais un fichier existant (FileExistsError). Réutilise un dossier
+    existant même si sa casse diffère (resolve_existing).
+    """
+    dest = resolve_existing(library, folder / path.name)
+    if dest.exists():
+        raise FileExistsError(dest)
+    return place_atomically(path, dest)
 
 
 # --------------------------------------------------------------------------- #
@@ -316,10 +353,20 @@ class LibraryIndex:
                 title_key=fold(info.get("title") or path.stem),
             )
             reread += 1
-        gone = [k for k in self.entries if k not in seen]
-        for k in gone:
-            del self.entries[k]
-        self.queries = {q: p for q, p in self.queries.items() if p in self.entries}
+        gone = {k: self.entries.pop(k).source for k in [k for k in self.entries if k not in seen]}
+        # Fichier déplacé ou renommé à la main : son ancien chemin a disparu, mais sa
+        # provenance (tag MUSIQUE_SOURCE, unique par téléchargement) le retrouve ailleurs.
+        # Sans ça, la mémoire « requête → fichier » était perdue (constaté le 2026-10-04
+        # après un rangement en dossiers puis retour à la racine : un morceau choisi à la
+        # main était reproposé, un autre déclaré introuvable).
+        by_source = {e.source: e.path for e in self.entries.values() if e.source}
+        queries = {}
+        for q, p in self.queries.items():
+            if p in self.entries:
+                queries[q] = p
+            elif gone.get(p) in by_source:
+                queries[q] = by_source[gone[p]]
+        self.queries = queries
         return reread, len(gone)
 
     def add(self, path: Path, source: str | None, artist: str, title: str, query_key: str | None) -> None:
@@ -362,6 +409,17 @@ class LibraryIndex:
 
     def remember_query(self, key: str, rel: str) -> None:
         self.queries[key] = rel
+
+    def moved(self, old: Path, new: Path) -> None:
+        """Un fichier indexé a été déplacé : son entrée et les requêtes qui y menaient suivent."""
+        old_rel = old.relative_to(self.library).as_posix()
+        new_rel = new.relative_to(self.library).as_posix()
+        entry = self.entries.pop(old_rel, None)
+        if entry is not None:
+            st = new.stat()
+            entry.path, entry.mtime, entry.size = new_rel, st.st_mtime, st.st_size
+            self.entries[new_rel] = entry
+        self.queries = {k: (new_rel if v == old_rel else v) for k, v in self.queries.items()}
 
 
 def walk_audio(root: Path) -> Iterator[Path]:

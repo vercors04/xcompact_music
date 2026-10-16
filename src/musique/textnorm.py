@@ -100,6 +100,29 @@ def split_title(title: str) -> tuple[str, list[str]]:
     return core, qualifiers
 
 
+_VIDEO_SUFFIX = re.compile(
+    r"\s*[\(\[](?:official|officiel|clip|lyrics?|paroles|audio|video|vid[ée]o|hd|4k|visuali[sz]er)[^\)\]]*[\)\]]",
+    re.IGNORECASE)
+_CHANNEL_SUFFIX = re.compile(r"\s*(?:-\s*topic|vevo|official|officiel)\s*$", re.IGNORECASE)
+
+
+def video_title_parts(title: str, channel: str = "") -> tuple[str, str]:
+    """(artiste, titre) d'une vidéo YouTube ordinaire (clip, mise en ligne d'amateur).
+
+    « Artiste - Titre (Official Video) » : le titre de la vidéo est plus fiable que la
+    chaîne (« ArtisteVEVO », ou un particulier). Sans tiret, on prend la chaîne, nettoyée.
+
+    >>> video_title_parts("10 rue d'la Madeleine - Vive la commune", "WTPL Music")
+    ("10 rue d'la Madeleine", 'Vive la commune')
+    >>> video_title_parts("Colors (Official Music Video)", "BlackPumasVEVO")
+    ('BlackPumas', 'Colors')
+    """
+    artist = _CHANNEL_SUFFIX.sub("", channel).strip()
+    if " - " in title:
+        artist, title = (p.strip() for p in title.split(" - ", 1))
+    return artist, _VIDEO_SUFFIX.sub("", title).strip()
+
+
 def dedupe_qualifiers(title: str) -> str:
     """Retire un qualificatif entre parenthèses répété à l'identique.
 
@@ -132,8 +155,10 @@ def dedupe_qualifiers(title: str) -> str:
 # \b = frontière de mot, pour que « live » ne déclenche pas sur « oliver ».
 VARIANT_PATTERNS: dict[str, str] = {
     "live": r"\blive\b|\bconcert\b|\bsessions?\b|\bunplugged\b|\ben direct\b|\ben public\b",
-    "remix": r"\bremix(?:ed)?\b|\brmx\b|\bmix\b|\bbootleg\b|\bflip\b|\brework\b|\bvip\b|\bdub\b",
-    "edit": r"\bedit\b|\bsingle version\b|\bradio version\b",
+    # « Single mix » = la version du 45 tours (cas réel : Matmatah, « Au conditionnel
+    # (Single mix) », seule version studio sur YouTube Music) : une variante douce, pas un remix.
+    "remix": r"\bremix(?:ed)?\b|\brmx\b|(?<!single )\bmix\b|\bbootleg\b|\bflip\b|\brework\b|\bvip\b|\bdub\b",
+    "edit": r"\bedit\b|\bsingle (?:version|mix)\b|\bradio version\b",
     "acoustic": r"\bacoustic\b|\bacoustique\b|\bunplugged\b|\bstripped\b",
     "instrumental": r"\binstrumental\b|\bkaraoke\b|\bbacking track\b",
     "acapella": r"\ba ?cappella\b|\bacapella\b|\bvocals? only\b",
@@ -232,6 +257,34 @@ def featured_artists(title: str) -> list[str]:
         if _FEAT_PREFIX.match(q):
             out += split_artists(_FEAT_PREFIX.sub("", q))
     return out
+
+
+_REMIXER = re.compile(r"^(.+?)\s+(?:remix|rmx|rework|edit|version)$", re.IGNORECASE)
+
+
+def remixers(title: str) -> list[str]:
+    """Artistes cités comme remixeurs dans un titre : « Butterfly (Malik Djoudi Remix) ».
+
+    Spotify crédite le remixeur comme artiste, YouTube Music souvent pas : sans ça, la
+    requête « Léonie Pernet, Malik Djoudi - Butterfly - Malik Djoudi Remix » ne trouvait
+    pas Malik Djoudi parmi les artistes du bon candidat (artiste 0,67, douteux).
+
+    >>> remixers("Butterfly (Malik Djoudi Remix)"), remixers("Creep (Radio Edit)")
+    (['Malik Djoudi'], [])
+    """
+    out = []
+    for q in split_title(title)[1]:
+        m = _REMIXER.match(q.strip())
+        # Un faux positif (« Piano Version » → « Piano ») est sans effet : ces noms ne font
+        # qu'*ajouter* des artistes possibles au candidat, utiles seulement s'ils sont demandés.
+        if m and not variant_counts(m.group(1)) and not _NOT_A_REMIXER.search(fold(m.group(1))):
+            out += split_artists(m.group(1))
+    return out
+
+
+_NOT_A_REMIXER = re.compile(
+    r"^(?:radio|single|original|album|extended|club|short|long|main|clean|dirty|explicit|deluxe|mono|stereo"
+    r"|full|new|special|alternate|alternative|studio|vocal|\d{4})\b")
 
 
 def unrequested_guests(query_artist: str, query_title: str, names: list[str]) -> bool:

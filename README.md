@@ -55,18 +55,26 @@ musique doctor
 ```sh
 musique get "Daft Punk - Around the World" "Radiohead - Creep"
 musique get -f list.txt              # one query per line
+musique get -f playlist.csv          # Spotify playlist export (Exportify...): durations used
 musique get -p PLAYLIST_URL          # YouTube or YouTube Music playlist
+musique get "https://youtu.be/ID"    # this exact video (for tracks missing from YouTube Music)
+musique get -f list.txt -d "Rock"    # put the batch in <library>/Rock/
 musique get -f list.txt --dry-run    # show the choices, download nothing
 musique get -f list.txt --confirm    # ask about uncertain matches
                                      # (otherwise: pick them by number at the end of the batch)
 musique review                       # go through matches set aside earlier
 musique retag                        # refresh tags of existing files from MusicBrainz
 musique gain --check                 # loudness before/after gain, per file
-musique scan                         # Android: make files show up in music apps (MediaStore)
+musique scan                         # Android: re-announce files to the system media index (MediaStore)
 ```
 
 Turn on ReplayGain in your player, in track mode with a 0 dB pre-amp. Tested with Auxio
 (Android) and Strawberry (GStreamer).
+
+New tracks in Auxio: Auxio (4.x) reads its music folders itself (default source: "file picker")
+and only loads the library when its process starts. After a batch, use Settings → Music →
+Refresh music ("Automatic reloading" may also work; untested). `musique scan` only matters for apps that
+read the system media index (MediaStore): stock music apps, or Auxio with the "System" source.
 
 ## Development
 

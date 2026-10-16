@@ -141,6 +141,34 @@ def build_argv(dest_dir: Path, retries: int = 3, js_runtime: str = "", cookies_f
     return argv
 
 
+def video_info(url: str, *, js_runtime: str = "", cookies_file: str = "") -> dict:
+    """Informations d'une vidéo (titre, chaîne, durée, id), sans rien télécharger.
+
+    Erreurs classées comme pour download_audio (une vidéo privée → UNAVAILABLE…).
+    """
+    import yt_dlp
+
+    # --abort-on-error : sinon yt-dlp avale l'erreur et renvoie None (voir build_argv).
+    argv = ["--no-playlist", "--quiet", "--skip-download", "--abort-on-error"]
+    if js_runtime:
+        argv += ["--js-runtimes", js_runtime]
+    if cookies_file:
+        argv += ["--cookies", cookies_file]
+    opts = yt_dlp.parse_options(argv).ydl_opts
+    logger = _Logger()
+    opts["logger"] = logger
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except yt_dlp.utils.DownloadError as e:
+        msg = str(e) or logger.last_error
+        raise SourceError(classify(msg), _short(msg)) from e
+    if not info:
+        msg = logger.last_error or "yt-dlp n'a rien renvoyé"
+        raise SourceError(classify(msg), _short(msg))
+    return {k: info.get(k) for k in ("id", "title", "channel", "uploader", "duration")}
+
+
 def download_audio(url: str, dest_dir: Path, *, retries: int = 3, js_runtime: str = "",
                    cookies_file: str = "", ffmpeg_location: str = "") -> tuple[Path, dict]:
     """Télécharge l'audio de `url` dans `dest_dir`. Renvoie (chemin, infos du format).
