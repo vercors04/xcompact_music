@@ -79,8 +79,8 @@ LAYOUTS = ("flat", "artist_album")
 def track_relpath(meta: TrackMeta, ext: str, layout: str = "flat") -> Path:
     """Chemin du fichier, relatif à la bibliothèque.
 
-    * "flat" (défaut) : tout à la racine, « Artiste - Titre.ext ». Tu ranges ensuite
-      comme tu veux : l'outil retrouve les fichiers déplacés grâce à leurs tags.
+    * "flat" (défaut) : tout à la racine, « Artiste - Titre.ext ». Rangement libre
+      ensuite : les fichiers déplacés sont retrouvés par leurs tags.
     * "artist_album" : « Artiste de l'album/Album/NN - Titre.ext ». On range par
       *artiste de l'album* : sinon les featurings éclateraient un album en plusieurs
       dossiers.
@@ -305,8 +305,8 @@ class LibraryIndex:
                 return
             # La mémoire « requête → fichier » survit à un changement de version : sans
             # elle, une requête au résultat instable (classique : une autre interprétation
-            # chaque jour) serait retéléchargée en double. Constaté lors du passage à la
-            # version 2. refresh() élague les chemins disparus.
+            # chaque jour) serait retéléchargée en double. refresh() élague les chemins
+            # disparus.
             queries = {str(k): str(v) for k, v in data.get("queries", {}).items()}
             entries = {}
             if data.get("version") == self.VERSION:
@@ -337,7 +337,7 @@ class LibraryIndex:
             rel = path.relative_to(self.library).as_posix()
             try:
                 st = path.stat()
-            except OSError:  # supprimé entre-temps (par Syncthing, par moi…)
+            except OSError:  # supprimé entre-temps (Syncthing, suppression manuelle…)
                 continue
             seen.add(rel)
             old = self.entries.get(rel)
@@ -356,9 +356,8 @@ class LibraryIndex:
         gone = {k: self.entries.pop(k).source for k in [k for k in self.entries if k not in seen]}
         # Fichier déplacé ou renommé à la main : son ancien chemin a disparu, mais sa
         # provenance (tag MUSIQUE_SOURCE, unique par téléchargement) le retrouve ailleurs.
-        # Sans ça, la mémoire « requête → fichier » était perdue (constaté le 2026-10-04
-        # après un rangement en dossiers puis retour à la racine : un morceau choisi à la
-        # main était reproposé, un autre déclaré introuvable).
+        # Sans ça, la mémoire « requête → fichier » serait perdue (morceau choisi à la
+        # main reproposé, ou déclaré introuvable).
         by_source = {e.source: e.path for e in self.entries.values() if e.source}
         queries = {}
         for q, p in self.queries.items():

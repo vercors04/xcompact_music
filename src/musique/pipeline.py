@@ -139,8 +139,8 @@ def _source_failed(ctx: Context, src_name: str, err: SourceError) -> None:
     # Une erreur « extracteur » peut être isolée (une vidéo bizarre) : on tolère 2 échecs.
     if err.kind is ErrorKind.BOT_CHECK or ctx.strikes[src_name] >= 2:
         if err.kind is ErrorKind.BOT_CHECK:
-            reason = ("YouTube bloque les requêtes (« confirm you're not a bot »). Attends quelques heures, "
-                      "change de réseau, ou fournis des cookies (download.cookies_file).")
+            reason = ("YouTube bloque les requêtes (« confirm you're not a bot »). Solutions : attendre "
+                      "quelques heures, changer de réseau ou renseigner download.cookies_file.")
         else:
             reason = f"la source ne répond plus comme prévu. {ytdlp.update_hint()}"
         ctx.disabled[src_name] = reason
@@ -191,8 +191,8 @@ def _guarded(q: Query, ctx: Context, run: Callable[[], Result]) -> Result:
 def _file_present_into_folder(q: Query, r: Result, ctx: Context) -> None:
     """Morceau déjà présent *à la racine* : on le déplace dans le dossier du lot.
 
-    Seulement depuis la racine (là où arrivent les fichiers non rangés) : un fichier que
-    j'ai déjà rangé dans un autre dossier y reste (un fichier ne peut pas être dans deux
+    Seulement depuis la racine (là où arrivent les fichiers non rangés) : un fichier
+    déjà rangé dans un autre dossier y reste (un fichier ne peut pas être dans deux
     dossiers ; on ne défait pas un rangement manuel). Un échec n'annule rien : le
     fichier reste où il est.
     """
@@ -348,7 +348,7 @@ def _acquire(s: Scored, q: Query, ctx: Context) -> tuple[Path, str]:
         meta = mb.meta
         log.info("%s : %s", q.raw, mb.note)
 
-    # Même morceau déjà présent (autre videoId, ou fichier que tu as renommé/déplacé) ?
+    # Même morceau déjà présent (autre videoId, ou fichier renommé/déplacé) ?
     # 1) mêmes tags artiste + titre n'importe où dans la bibliothèque ;
     # 2) même nom de fichier à l'emplacement prévu (dossier du lot, ou racine), extension
     #    la plus probable.

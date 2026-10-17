@@ -345,8 +345,8 @@ def apply_choice(meta: TrackMeta, choice: ReleaseChoice) -> TrackMeta:
 
     Ce qui vient de MusicBrainz : album, année, n° de piste/disque, nombre de pistes,
     type de sortie, identifiants, et le titre *s'il porte les mêmes variantes*.
-    Ce qui reste de YouTube Music : les noms d'artistes. Ils correspondent à ce que tu
-    as cherché et sont en alphabet latin, alors que MusicBrainz les crédite tels
+    Ce qui reste de YouTube Music : les noms d'artistes. Ils correspondent à la requête
+    et sont en alphabet latin, alors que MusicBrainz les crédite tels
     qu'imprimés sur le disque (« 細野晴臣 »).
     """
     rec, rel, rg = choice.recording, choice.release, choice.release_group

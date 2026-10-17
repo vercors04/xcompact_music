@@ -1,4 +1,4 @@
-"""`musique doctor` : vérifie tout ce dont l'outil a besoin, avec un diagnostic clair."""
+"""`musique doctor` : vérifie dépendances, configuration, bibliothèque et réseau."""
 
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ def run_checks(cfg: Config | None, args) -> int:
                 free = shutil.disk_usage(lib).free / 1e9
                 add(OK if free > 1 else WARN, "espace libre", f"{free:.1f} Go (≈ {free * 1000 / 5:.0f} titres Opus)")
             except OSError as e:
-                hint = " Termux : lance termux-setup-storage" if is_termux() else ""
+                hint = " Termux : termux-setup-storage" if is_termux() else ""
                 add(FAIL, "bibliothèque", f"écriture impossible : {e}.{hint}")
         try:
             cfg.state_dir.mkdir(parents=True, exist_ok=True)

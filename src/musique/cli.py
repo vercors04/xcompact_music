@@ -7,7 +7,7 @@
     musique review          # traiter les requêtes douteuses mises de côté
     musique gain --check    # mesurer l'homogénéité du volume de la bibliothèque
     musique retag           # appliquer MusicBrainz à des fichiers déjà présents
-    musique scan            # Android : faire apparaître les fichiers dans les applis musique
+    musique scan            # Android : signaler les fichiers à MediaStore
     musique doctor          # vérifier l'installation
 """
 
@@ -103,7 +103,7 @@ def playlist_queries(url: str) -> list[Query]:
 
 
 class UsageError(Exception):
-    """Erreur de l'utilisateur (fichier introuvable…) : message clair, pas de trace."""
+    """Erreur d'utilisation (fichier introuvable…) : message court, sans trace Python."""
 
 
 def _gather_queries(args) -> list[Query]:
@@ -187,7 +187,7 @@ def parse_selection(text: str, offered: dict[int, int]) -> list[tuple[int, int]]
         if hi < lo:
             raise ValueError(f"intervalle à l'envers : « {tok} »")
         if letter and hi != lo:
-            raise ValueError(f"lettre sur un intervalle : « {tok} » (choisis la lettre numéro par numéro)")
+            raise ValueError(f"lettre sur un intervalle : « {tok} » (une lettre par numéro)")
         nums = [n for n in range(lo, hi + 1) if n in offered]
         if not nums:
             raise ValueError(f"{tok} : pas dans la liste proposée")
@@ -213,15 +213,14 @@ def offer_choices(results: list[Result]) -> list[tuple[int, Scored]]:
     if not offered:
         return []
     width = len(str(len(results)))
-    print(f"\nNon téléchargé{'s' if len(offered) > 1 else ''} : "
-          "tu peux choisir de télécharger quand même le candidat trouvé.")
+    print(f"\nNon téléchargé{'s' if len(offered) > 1 else ''} :")
     for i, cands in offered.items():
         r = results[i - 1]
         print(f"  {i:>{width}}. {r.query.raw}   ({r.outcome.value})")
         for k, s in enumerate(cands):
             print(f"  {'':>{width}}   {chr(ord('a') + k)}) {s.candidate.label()}   {explain(s)}")
     if not sys.stdin.isatty():
-        print("(entrée non interactive : rien n'est demandé ; relance dans un terminal pour choisir)")
+        print("(entrée non interactive : aucun choix demandé)")
         return []
     counts = {i: len(c) for i, c in offered.items()}
     while True:
@@ -295,7 +294,7 @@ def _run_batch(cfg: Config, queries: list[Query], dry_run: bool, confirm: bool, 
                         replaced.add(i)
                     print(line(i, n, r, cfg.library, verbose), flush=True)
         except (StopBatch, KeyboardInterrupt):
-            print("\nInterrompu : les fichiers déjà rangés sont complets, rien n'est à moitié écrit.")
+            print("\nInterrompu. Fichiers déjà rangés complets.")
 
     print()
     print(summary(results))
@@ -368,7 +367,7 @@ def cmd_gain(cfg: Config, args) -> int:
             return f"min {min(v):6.1f}  max {max(v):6.1f}  écart max {max(v) - min(v):5.1f} LU  écart-type {sd:4.1f} LU"
         print(f"\nAvant gain : {stats(raw_l)}")
         print(f"Après gain : {stats(eff_l)}")
-        print(f"(cible {lc.target_lufs} LUFS ; les titres plafonnés restent volontairement en dessous)")
+        print(f"(cible {lc.target_lufs} LUFS ; titres plafonnés en dessous)")
     return 0
 
 
@@ -440,17 +439,16 @@ def cmd_scan(cfg: Config, args) -> int:
     from musique.library import walk_audio
 
     if not is_termux():
-        print("Rien à faire : l'index des médias n'existe que sous Android (Termux).")
+        print("Sans objet hors Android (Termux).")
         return 0
     paths = [Path(p) for p in args.paths] if args.paths else sorted(walk_audio(cfg.library))
     if not paths:
         print("Aucun fichier audio.")
         return 0
-    print(f"{len(paths)} fichier(s) à signaler à l'index des médias d'Android (~0,5 s chacun)…")
+    print(f"{len(paths)} fichier(s) à signaler à MediaStore (~0,5 s chacun)…")
     n = media_scan(paths)
     # `am` ne dit pas si la diffusion a été reçue : on compte les envois, pas l'indexation.
-    print(f"{n}/{len(paths)} diffusion(s) envoyée(s). Utile pour les applis qui lisent l'index "
-          "(appli d'origine, Auxio en source « Système ») ; Auxio par défaut : « Actualiser la musique ».")
+    print(f"{n}/{len(paths)} diffusion(s) envoyée(s).")
     return 0 if n == len(paths) else 1
 
 
@@ -501,7 +499,7 @@ def build_parser() -> argparse.ArgumentParser:
     rt.add_argument("-n", "--dry-run", action="store_true", help="montrer les changements sans rien écrire")
     rt.set_defaults(func=cmd_retag)
 
-    sc = add("scan", help="faire apparaître les fichiers dans les applis musique d'Android (Termux)")
+    sc = add("scan", help="signaler les fichiers à MediaStore (Android)")
     sc.add_argument("paths", nargs="*", help="fichiers (défaut : toute la bibliothèque)")
     sc.set_defaults(func=cmd_scan)
 
@@ -532,11 +530,10 @@ def main(argv: list[str] | None = None) -> int:
         print(e, file=sys.stderr)
         return 2
     except AlreadyRunning as e:
-        print(f"{e} : attends qu'il se termine.", file=sys.stderr)
+        print(f"{e}.", file=sys.stderr)
         return 3
     except KeyboardInterrupt:
-        print("\nInterrompu. Rien n'est à moitié écrit : les fichiers sont modifiés d'un coup ou pas du tout.",
-              file=sys.stderr)
+        print("\nInterrompu. Aucun fichier à moitié écrit.", file=sys.stderr)
         return 130
     except Exception as e:  # bug ou cas imprévu : message court, détails dans le journal
         log.exception("erreur inattendue")

@@ -32,9 +32,9 @@ def fix_console_encoding() -> None:
 def wake_lock(enabled: bool = True, release: bool = True) -> Iterator[None]:
     """Sous Termux, empêche Android de mettre le processeur en veille pendant un lot.
 
-    `termux-wake-lock` fait partie de Termux (pas besoin de Termux:API). Attention :
-    le verrou est global à l'appli Termux ; le relâcher à la fin relâche aussi un
-    verrou que tu aurais pris toi-même (d'où l'option release_wake_lock).
+    `termux-wake-lock` fait partie de Termux (sans Termux:API). Le verrou est global à
+    Termux : le relâcher à la fin relâche aussi un verrou pris à la main (d'où
+    release_wake_lock).
     """
     active = enabled and is_termux() and shutil.which("termux-wake-lock") is not None
     if active:
@@ -51,18 +51,12 @@ def media_scan(paths: list[Path], enabled: bool = True) -> int:
     de diffusions qu'`am` a envoyées sans erreur (0 hors Termux). Ce n'est pas une preuve
     d'indexation : `am` sort avec 0 même si aucun récepteur ne reçoit la diffusion.
 
-    Pourquoi : les applis qui lisent MediaStore (appli Musique d'origine, Auxio en source
-    « Système ») ne listent que ce qu'il connaît. Constaté le 2026-10-03 avec l'appli
-    d'origine : les fichiers rangés par l'outil n'y apparaissaient pas tant qu'on ne les
-    avait pas ouverts depuis le gestionnaire de fichiers. Cause probable (non vérifiée) :
-    ils sont écrits dans .musique/ (qui contient un .nomedia, donc ignoré par Android) puis
-    *renommés* dans la bibliothèque, et ce renommage ne déclenche pas d'indexation.
-    Vérifié : une diffusion MEDIA_SCANNER_SCAN_FILE par `am` (fourni par Termux, sans
-    Termux:API) fait apparaître le fichier ; ~0,5 s par fichier.
-
-    Sans effet sur Auxio 4.x en source par défaut (« sélecteur de fichiers ») : il parcourt
-    lui-même ses dossiers et ne recharge qu'au démarrage de son processus ou sur
-    « Actualiser la musique » (constaté le 2026-10-16).
+    Les applis qui lisent MediaStore (appli Musique d'origine, Auxio en source « Système »)
+    ne voient pas les fichiers rangés par l'outil : écrits dans .musique/ (.nomedia) puis
+    renommés dans la bibliothèque, ils ne sont pas indexés. Une diffusion
+    MEDIA_SCANNER_SCAN_FILE par `am` (fourni par Termux) les fait apparaître ; ~0,5 s par
+    fichier. Sans effet sur Auxio 4.x en source par défaut (sélecteur de fichiers), qui
+    parcourt lui-même ses dossiers.
 
     Signaler un chemin qui n'existe plus retire son entrée de l'index (ancien nom après un
     renommage). Un échec n'est jamais bloquant : le fichier est là, seul l'affichage tarde.

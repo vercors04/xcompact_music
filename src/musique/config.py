@@ -154,7 +154,7 @@ def load(path: str | Path | None = None) -> Config:
         raise ConfigError(f"library = {library!r} : un chemin entre guillemets est attendu")
     if not library:
         raise ConfigError(
-            f"aucune bibliothèque configurée. Crée {cfg_path} avec par exemple :\n"
+            f"aucune bibliothèque configurée. Exemple de {cfg_path} :\n"
             f'  library = "/storage/XXXX-XXXX/Music"\n'
             f"(voir config.example.toml)"
         )

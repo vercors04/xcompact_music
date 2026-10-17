@@ -4,7 +4,7 @@ Pourquoi `filter="songs"` : ce filtre ne renvoie que les pistes « audio officie
 (type MUSIC_VIDEO_TYPE_ATV) fournies par les labels, avec le master du disque. Les
 clips (OMV) ont souvent un autre mixage, des bruitages, une intro parlée.
 
-Piège vérifié : dans `get_album`, une piste peut pointer vers le *clip* (OMV) plutôt
+Piège : dans `get_album`, une piste peut pointer vers le *clip* (OMV) plutôt
 que vers la version audio. On ne réutilise donc jamais le videoId de l'album : on
 garde celui de la recherche « songs » et on n'utilise l'album que pour l'année, le
 numéro de piste et la pochette.
@@ -93,7 +93,7 @@ class YTMusicSource:
                 raise SourceError(
                     ErrorKind.BROKEN,
                     f"{what} : réponse YouTube Music illisible ({type(e).__name__}: {e}). "
-                    "Mets à jour ytmusicapi : pip install -U ytmusicapi",
+                    "Mise à jour : pip install -U ytmusicapi",
                 ) from e
         raise AssertionError("unreachable")
 

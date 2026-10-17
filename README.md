@@ -9,7 +9,7 @@ For each query it:
 1. searches YouTube Music (official audio tracks only) and scores the results against the
    query: title, artist, duration, and markers such as live, remix or cover. Uncertain
    matches are not downloaded automatically: at the end of the batch they are listed with
-   their best candidates, and you type the numbers you want anyway (e.g. `2 15b`);
+   their best candidates and can be picked by number (e.g. `2 15b`);
 2. downloads the original Opus stream with yt-dlp, without transcoding;
 3. looks up the recording on MusicBrainz for the original album, year, track number and
    cover art;
@@ -43,8 +43,7 @@ Create the config file, `~/.config/musique/config.toml` (Windows:
 library = "/storage/XXXX-XXXX/Music"
 ```
 
-Other options are listed in [config.example.toml](config.example.toml). Then check the
-setup:
+Other options: [config.example.toml](config.example.toml). Setup check:
 
 ```sh
 musique doctor
@@ -65,16 +64,16 @@ musique get -f list.txt --confirm    # ask about uncertain matches
 musique review                       # go through matches set aside earlier
 musique retag                        # refresh tags of existing files from MusicBrainz
 musique gain --check                 # loudness before/after gain, per file
-musique scan                         # Android: re-announce files to the system media index (MediaStore)
+musique scan                         # Android: announce files to MediaStore
 ```
 
-Turn on ReplayGain in your player, in track mode with a 0 dB pre-amp. Tested with Auxio
-(Android) and Strawberry (GStreamer).
+Player settings: ReplayGain on, track mode, 0 dB pre-amp. Tested with Auxio (Android) and
+Strawberry (GStreamer).
 
-New tracks in Auxio: Auxio (4.x) reads its music folders itself (default source: "file picker")
-and only loads the library when its process starts. After a batch, use Settings → Music →
-Refresh music ("Automatic reloading" may also work; untested). `musique scan` only matters for apps that
-read the system media index (MediaStore): stock music apps, or Auxio with the "System" source.
+Auxio 4.x (default "file picker" source) scans its folders itself and loads the library
+only when its process starts: new tracks appear after Settings → Music → Refresh music.
+`musique scan` only affects apps that read MediaStore (stock music apps, Auxio with the
+"System" source).
 
 ## Development
 
@@ -88,5 +87,5 @@ The tests run offline. MusicBrainz responses are replayed from `tests/data/mb_ca
 ## Notes
 
 YouTube does not serve lossless audio: the Opus stream (about 130-165 kbps) is the best
-quality available without an account. Make sure your use complies with YouTube's terms
-and the copyright law where you live.
+quality available without an account. Use is subject to YouTube's terms and local
+copyright law.

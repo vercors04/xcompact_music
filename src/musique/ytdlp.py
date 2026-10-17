@@ -92,7 +92,7 @@ def version_age_days(today: dt.date | None = None) -> int | None:
 def update_hint() -> str:
     age = version_age_days()
     age_txt = f", publiée il y a {age} jours" if age is not None else ""
-    return f"yt-dlp {version()}{age_txt}. Mets-le à jour : pip install -U yt-dlp yt-dlp-ejs"
+    return f"yt-dlp {version()}{age_txt}. Mise à jour : pip install -U yt-dlp yt-dlp-ejs"
 
 
 class _Logger:
